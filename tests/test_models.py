@@ -1,0 +1,20 @@
+from datetime import datetime
+from stock_sentinel.models import SentimentResult, TechnicalSignal, TickerSnapshot, Alert
+
+def test_sentiment_result_defaults():
+    s = SentimentResult(ticker="NVDA", score=0.5, tweet_count=15, scraped_at=datetime.utcnow())
+    assert s.failed is False
+    assert s.source == "x"
+
+def test_technical_signal_fields():
+    t = TechnicalSignal(
+        ticker="NVDA", rsi=28.0, ma_20=800.0, ma_50=780.0, atr=12.5,
+        entry=810.0, stop_loss=791.25, take_profit=847.5,
+        direction="LONG", analyzed_at=datetime.utcnow()
+    )
+    assert t.direction == "LONG"
+
+def test_ticker_snapshot_defaults():
+    snap = TickerSnapshot(ticker="AMZN")
+    assert snap.sentiment is None
+    assert snap.last_alert_at is None

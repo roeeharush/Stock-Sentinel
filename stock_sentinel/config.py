@@ -1,0 +1,16 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+WATCHLIST = ["NVDA", "AMZN", "SOFI", "OKLO", "RKLB", "FLNC", "ANXI", "AXTI"]
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+X_COOKIES_PATH = "session/x_cookies.json"
+SENTIMENT_MIN_TWEETS = 10
+COOLDOWN_MINUTES = 120
+RSI_OVERSOLD = 30.0
+RSI_OVERBOUGHT = 70.0
+ATR_SL_MULTIPLIER = 1.5
+ATR_TP_MULTIPLIER = 3.0
+SCRAPER_CIRCUIT_BREAKER_N = 3
