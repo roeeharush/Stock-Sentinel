@@ -12,6 +12,14 @@ class SentimentResult:
     failed: bool = False  # True if Playwright was blocked
 
 @dataclass
+class NewsSentimentResult:
+    ticker: str
+    headlines: list[str]
+    score: float          # -1.0 to +1.0
+    fetched_at: datetime
+    failed: bool = False
+
+@dataclass
 class TechnicalSignal:
     ticker: str
     rsi: float
@@ -28,6 +36,7 @@ class TechnicalSignal:
 class TickerSnapshot:
     ticker: str
     sentiment: SentimentResult | None = None
+    news_sentiment: NewsSentimentResult | None = None
     technical: TechnicalSignal | None = None
     last_alert_at: datetime | None = None
 
