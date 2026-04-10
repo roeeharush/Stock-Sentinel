@@ -53,6 +53,9 @@ def test_build_message_no_headlines():
     alert, _ = _alert()
     msg = build_message(alert, [])
     assert "NVDA" in msg
+    assert "RSI" in msg
+    assert "0.54" in msg
+    assert "Top Headlines" not in msg
 
 
 def test_generate_chart_creates_png():
@@ -71,13 +74,15 @@ async def test_send_alert_returns_true_on_success():
         mock_bot_instance.send_message = AsyncMock(return_value=MagicMock())
         result = await send_alert(alert, headlines, "fake_token", "fake_chat")
     assert result is True
+    mock_bot_instance.send_message.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_send_alert_returns_false_on_failure():
     from telegram.error import TelegramError
     alert, headlines = _alert()
-    with patch("stock_sentinel.notifier.Bot") as MockBot:
+    with patch("stock_sentinel.notifier.Bot") as MockBot, \
+         patch("stock_sentinel.notifier.asyncio.sleep", new_callable=AsyncMock):
         mock_bot_instance = AsyncMock()
         MockBot.return_value = mock_bot_instance
         mock_bot_instance.send_message = AsyncMock(side_effect=TelegramError("fail"))
