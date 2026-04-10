@@ -5,3 +5,14 @@ session/x_cookies.json
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code tool settings
+.claude/
