@@ -5,6 +5,7 @@ from unittest.mock import patch
 from datetime import datetime, timezone
 from stock_sentinel.analyzer import fetch_ohlcv, compute_signals
 from stock_sentinel.models import TechnicalSignal
+from stock_sentinel.config import ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER
 
 
 def _mock_df(seed=42, rows=60, base=100.0):
@@ -61,10 +62,8 @@ def test_compute_signals_sl_tp_multipliers():
     df["SMA_20"] = df["Close"] * 0.95
     r = compute_signals("NVDA", df)
     assert r.direction == "LONG"
-    expected_sl = r.entry - 1.5 * r.atr
-    expected_tp = r.entry + 3.0 * r.atr
-    assert abs(r.stop_loss - expected_sl) < 0.0001
-    assert abs(r.take_profit - expected_tp) < 0.0001
+    assert abs(r.stop_loss - (r.entry - ATR_SL_MULTIPLIER * r.atr)) < 0.0001
+    assert abs(r.take_profit - (r.entry + ATR_TP_MULTIPLIER * r.atr)) < 0.0001
 
 
 def test_compute_signals_neutral_direction():
@@ -92,3 +91,10 @@ def test_fetch_ohlcv_flattens_multiindex_columns():
         result = fetch_ohlcv("NVDA")
     assert "Close" in result.columns
     assert not isinstance(result.columns, pd.MultiIndex)
+
+
+def test_compute_signals_raises_on_short_dataframe():
+    """DataFrame shorter than 50 rows should raise ValueError."""
+    df = _mock_df(rows=30)
+    with pytest.raises(ValueError, match="too short"):
+        compute_signals("NVDA", df)
