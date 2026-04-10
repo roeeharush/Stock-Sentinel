@@ -25,7 +25,7 @@ def test_fetch_news_returns_result():
         {"title": "NVDA stock climbs higher"},
         {"title": "Bullish outlook for NVDA"},
     ]
-    with patch("yfinance.Ticker") as MockTicker:
+    with patch("stock_sentinel.news_scraper.yf.Ticker") as MockTicker:
         MockTicker.return_value.news = mock_news
         result = fetch_news_sentiment("NVDA")
     assert isinstance(result, NewsSentimentResult)
@@ -33,10 +33,11 @@ def test_fetch_news_returns_result():
     assert result.failed is False
     assert len(result.headlines) == 3
     assert result.score > 0.0
+    assert result.headline_count == 3
 
 
 def test_fetch_news_failed_on_exception():
-    with patch("yfinance.Ticker") as MockTicker:
+    with patch("stock_sentinel.news_scraper.yf.Ticker") as MockTicker:
         MockTicker.side_effect = Exception("network error")
         result = fetch_news_sentiment("NVDA")
     assert result.failed is True

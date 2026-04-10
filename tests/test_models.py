@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from stock_sentinel.models import (
-    SentimentResult, TechnicalSignal, TickerSnapshot, Alert
+    SentimentResult, TechnicalSignal, TickerSnapshot, Alert, NewsSentimentResult
 )
 
 
@@ -50,13 +50,11 @@ def test_technical_signal_direction_literals():
 
 
 def test_ticker_snapshot_has_news_sentiment():
-    from stock_sentinel.models import NewsSentimentResult
-    from datetime import timezone
     snap = TickerSnapshot(ticker="NVDA")
     assert snap.news_sentiment is None
     ns = NewsSentimentResult(
         ticker="NVDA", headlines=["NVDA beats earnings"],
-        score=0.5, fetched_at=datetime.now(timezone.utc)
+        score=0.5, headline_count=1, fetched_at=datetime.now(timezone.utc)
     )
     snap.news_sentiment = ns
     assert snap.news_sentiment.score == 0.5

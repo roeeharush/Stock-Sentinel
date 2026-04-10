@@ -25,6 +25,7 @@ def fetch_news_sentiment(ticker: str, max_headlines: int = 10) -> NewsSentimentR
             ticker=ticker,
             headlines=headlines,
             score=_score_headlines(headlines),
+            headline_count=len(headlines),
             fetched_at=datetime.now(timezone.utc),
         )
     except Exception:
@@ -32,6 +33,7 @@ def fetch_news_sentiment(ticker: str, max_headlines: int = 10) -> NewsSentimentR
             ticker=ticker,
             headlines=[],
             score=0.0,
+            headline_count=0,
             fetched_at=datetime.now(timezone.utc),
             failed=True,
         )

@@ -16,6 +16,7 @@ class NewsSentimentResult:
     ticker: str
     headlines: list[str]
     score: float          # -1.0 to +1.0
+    headline_count: int
     fetched_at: datetime
     failed: bool = False
 
