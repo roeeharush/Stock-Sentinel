@@ -49,6 +49,8 @@ class Alert:
     stop_loss: float
     take_profit: float
     rsi: float
-    sentiment_score: float
-    chart_path: str | None
-    generated_at: datetime
+    sentiment_score: float      # combined 60/40 weighted score
+    twitter_score: float = 0.0  # raw twitter component
+    news_score: float = 0.0     # raw news component
+    chart_path: str | None = None
+    generated_at: datetime = None  # will be set at construction
