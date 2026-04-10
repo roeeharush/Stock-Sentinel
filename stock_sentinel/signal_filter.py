@@ -3,6 +3,16 @@ from stock_sentinel.models import TickerSnapshot
 from stock_sentinel.config import SENTIMENT_MIN_TWEETS, SENTIMENT_MIN_HEADLINES, COOLDOWN_MINUTES
 
 
+def _twitter_ok(snapshot: TickerSnapshot) -> bool:
+    s = snapshot.sentiment
+    return s is not None and not s.failed and s.tweet_count >= SENTIMENT_MIN_TWEETS
+
+
+def _news_ok(snapshot: TickerSnapshot) -> bool:
+    n = snapshot.news_sentiment
+    return n is not None and not n.failed and n.headline_count >= SENTIMENT_MIN_HEADLINES
+
+
 def combined_sentiment_score(snapshot: TickerSnapshot) -> float:
     """Return 60/40 (news/twitter) weighted score with graceful degradation.
 
@@ -12,26 +22,15 @@ def combined_sentiment_score(snapshot: TickerSnapshot) -> float:
     - Only twitter available: twitter score (100%)
     - Neither available: 0.0
     """
-    s = snapshot.sentiment
-    n = snapshot.news_sentiment
+    t_ok = _twitter_ok(snapshot)
+    n_ok = _news_ok(snapshot)
 
-    twitter_ok = (
-        s is not None
-        and not s.failed
-        and s.tweet_count >= SENTIMENT_MIN_TWEETS
-    )
-    news_ok = (
-        n is not None
-        and not n.failed
-        and n.headline_count >= SENTIMENT_MIN_HEADLINES
-    )
-
-    if twitter_ok and news_ok:
-        return 0.6 * n.score + 0.4 * s.score
-    elif news_ok:
-        return n.score
-    elif twitter_ok:
-        return s.score
+    if t_ok and n_ok:
+        return 0.6 * snapshot.news_sentiment.score + 0.4 * snapshot.sentiment.score
+    elif n_ok:
+        return snapshot.news_sentiment.score
+    elif t_ok:
+        return snapshot.sentiment.score
     return 0.0
 
 
@@ -40,19 +39,7 @@ def should_alert(snapshot: TickerSnapshot) -> bool:
     if t is None or t.direction == "NEUTRAL":
         return False
 
-    s = snapshot.sentiment
-    n = snapshot.news_sentiment
-    twitter_ok = (
-        s is not None
-        and not s.failed
-        and s.tweet_count >= SENTIMENT_MIN_TWEETS
-    )
-    news_ok = (
-        n is not None
-        and not n.failed
-        and n.headline_count >= SENTIMENT_MIN_HEADLINES
-    )
-    if not twitter_ok and not news_ok:
+    if not _twitter_ok(snapshot) and not _news_ok(snapshot):
         return False
 
     score = combined_sentiment_score(snapshot)

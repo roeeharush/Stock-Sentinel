@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Literal
 
 @dataclass
@@ -53,4 +53,4 @@ class Alert:
     twitter_score: float = 0.0  # raw twitter component
     news_score: float = 0.0     # raw news component
     chart_path: str | None = None
-    generated_at: datetime = None  # will be set at construction
+    generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

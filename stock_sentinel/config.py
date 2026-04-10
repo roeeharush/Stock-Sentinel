@@ -11,7 +11,7 @@ TELEGRAM_CHAT_ID: str = os.environ.get("TELEGRAM_CHAT_ID", "")
 _PROJECT_ROOT = pathlib.Path(__file__).parent.parent
 X_COOKIES_PATH = str(_PROJECT_ROOT / "session" / "x_cookies.json")
 
-SENTIMENT_MIN_TWEETS = 10
+SENTIMENT_MIN_TWEETS: int = 10
 SENTIMENT_MIN_HEADLINES: int = 3
 COOLDOWN_MINUTES = 120
 RSI_OVERSOLD = 30.0
