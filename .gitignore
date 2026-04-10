@@ -1,0 +1,7 @@
+venv/
+.env
+session/x_cookies.json
+/tmp/stock_sentinel_*.png
+__pycache__/
+*.pyc
+.pytest_cache/
