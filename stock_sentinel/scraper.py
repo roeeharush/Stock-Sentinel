@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime, timezone
+from typing import Any
 from playwright.async_api import Browser, Page
 from playwright_stealth import stealth_async
 from stock_sentinel.models import SentimentResult
@@ -20,8 +21,8 @@ def _score_texts(texts: list[str]) -> float:
     return 0.0 if total == 0 else (bull - bear) / total
 
 
-async def init_browser(cookies_path: str) -> tuple[Browser, Page]:
-    from playwright.async_api import async_playwright
+async def init_browser(cookies_path: str) -> tuple[Any, Browser, Page]:
+    from playwright.async_api import async_playwright, Playwright
     pw = await async_playwright().start()
     browser = await pw.chromium.launch(headless=True)
     context = await browser.new_context()
@@ -30,7 +31,7 @@ async def init_browser(cookies_path: str) -> tuple[Browser, Page]:
     if os.path.exists(cookies_path):
         with open(cookies_path) as f:
             await context.add_cookies(json.load(f))
-    return browser, page
+    return pw, browser, page
 
 
 async def scrape_sentiment(ticker: str, page: Page) -> SentimentResult:
@@ -56,8 +57,9 @@ async def scrape_sentiment(ticker: str, page: Page) -> SentimentResult:
         )
 
 
-async def close_browser(browser: Browser) -> None:
+async def close_browser(pw: Any, browser: Browser) -> None:
     await browser.close()
+    await pw.stop()
 
 
 async def save_cookies(page: Page, cookies_path: str) -> None:
