@@ -22,7 +22,7 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
         f"{direction_emoji} כיוון: *{direction_heb}*",
         "",
         "💰 *נתונים טכניים*",
-        f"  כניסה:     `${alert.entry:.2f}`",
+        f"  נקודת כניסה: `${alert.entry:.2f}`",
         f"  סטופ לוס:  `${alert.stop_loss:.2f}`",
         f"  יעד רווח:  `${alert.take_profit:.2f}`",
         f"  RSI:       `{alert.rsi:.1f}`",
@@ -35,7 +35,7 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
     ]
 
     if headlines:
-        lines += ["", "📰 *כותרות מובילות*"]
+        lines += ["", "📰 *כותרות מרכזיות (מאומתות)*"]
         for h in headlines[:5]:
             translated = translate_to_hebrew(h)
             lines.append(f"  • {translated}")
