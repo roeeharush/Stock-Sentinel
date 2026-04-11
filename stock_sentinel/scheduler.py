@@ -10,6 +10,7 @@ from stock_sentinel.models import TickerSnapshot, Alert
 from stock_sentinel.analyzer import fetch_ohlcv, compute_signals
 from stock_sentinel.scraper import init_browser, scrape_sentiment, close_browser, save_cookies
 from stock_sentinel.news_scraper import fetch_news_sentiment
+from stock_sentinel.rss_provider import fetch_rss_sentiment
 from stock_sentinel.signal_filter import combined_sentiment_score, should_alert, update_cooldown
 from stock_sentinel.notifier import generate_chart, send_alert
 
@@ -48,6 +49,7 @@ async def _async_cycle(
                 continue  # skip to next iteration, break happens at loop top
 
             snap.news_sentiment = fetch_news_sentiment(ticker)
+            snap.rss_sentiment = fetch_rss_sentiment(ticker)
 
             try:
                 df = fetch_ohlcv(ticker)

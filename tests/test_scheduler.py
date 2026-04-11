@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timezone
 from stock_sentinel.models import (
     TickerSnapshot, SentimentResult, TechnicalSignal,
-    NewsSentimentResult, Alert,
+    NewsSentimentResult, RssSentimentResult, Alert,
 )
 
 
@@ -18,6 +18,17 @@ def _make_news(ticker, score=0.5, count=5, failed=False):
     return NewsSentimentResult(
         ticker=ticker,
         headlines=["headline"] * count,
+        score=score,
+        headline_count=count,
+        fetched_at=datetime.now(timezone.utc),
+        failed=failed,
+    )
+
+
+def _make_rss(ticker, score=0.4, count=5, failed=False):
+    return RssSentimentResult(
+        ticker=ticker,
+        headlines=["rss headline"] * count,
         score=score,
         headline_count=count,
         fetched_at=datetime.now(timezone.utc),
@@ -48,6 +59,8 @@ async def test_async_cycle_happy_path():
               return_value=_make_sentiment("NVDA")) as mock_scrape,
         patch("stock_sentinel.scheduler.fetch_news_sentiment",
               return_value=_make_news("NVDA")) as mock_news,
+        patch("stock_sentinel.scheduler.fetch_rss_sentiment",
+              return_value=_make_rss("NVDA")) as mock_rss,
         patch("stock_sentinel.scheduler.fetch_ohlcv",
               return_value=mock_df) as mock_ohlcv,
         patch("stock_sentinel.scheduler.compute_signals",
@@ -66,6 +79,7 @@ async def test_async_cycle_happy_path():
 
     mock_scrape.assert_called_once()
     mock_news.assert_called_once()
+    mock_rss.assert_called_once()
     mock_ohlcv.assert_called_once()
     mock_signals.assert_called_once()
     mock_filter.assert_called_once()
@@ -88,6 +102,8 @@ async def test_async_cycle_ticker_failure_continues():
               return_value=_make_sentiment("NVDA")),
         patch("stock_sentinel.scheduler.fetch_news_sentiment",
               return_value=_make_news("NVDA")),
+        patch("stock_sentinel.scheduler.fetch_rss_sentiment",
+              return_value=_make_rss("NVDA")),
         patch("stock_sentinel.scheduler.fetch_ohlcv",
               side_effect=ValueError("no data")),
         patch("stock_sentinel.scheduler.send_alert",
@@ -147,6 +163,8 @@ async def test_async_cycle_unexpected_exception_continues():
               return_value=_make_sentiment("NVDA")),
         patch("stock_sentinel.scheduler.fetch_news_sentiment",
               return_value=_make_news("NVDA")),
+        patch("stock_sentinel.scheduler.fetch_rss_sentiment",
+              return_value=_make_rss("NVDA")),
         patch("stock_sentinel.scheduler.fetch_ohlcv",
               return_value=MagicMock()),
         patch("stock_sentinel.scheduler.compute_signals",
