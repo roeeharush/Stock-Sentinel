@@ -78,9 +78,11 @@ async def test_send_alert_returns_true_on_success():
          patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
         mock_bot_instance = AsyncMock()
         MockBot.return_value = mock_bot_instance
-        mock_bot_instance.send_message = AsyncMock(return_value=MagicMock())
+        mock_msg = MagicMock()
+        mock_msg.message_id = 42
+        mock_bot_instance.send_message = AsyncMock(return_value=mock_msg)
         result = await send_alert(alert, headlines, "fake_token", "fake_chat")
-    assert result is True
+    assert result == 42
     mock_bot_instance.send_message.assert_called_once()
 
 
@@ -96,7 +98,7 @@ async def test_send_alert_returns_false_on_failure():
         mock_bot_instance.send_message = AsyncMock(side_effect=TelegramError("fail"))
         mock_bot_instance.send_photo = AsyncMock(side_effect=TelegramError("fail"))
         result = await send_alert(alert, headlines, "fake_token", "fake_chat")
-    assert result is False
+    assert result is None
 
 
 def test_build_daily_report_no_alerts():

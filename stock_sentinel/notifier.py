@@ -101,26 +101,26 @@ def generate_chart(ticker: str, df: pd.DataFrame, signal: TechnicalSignal) -> st
 
 async def send_alert(
     alert: Alert, headlines: list[str], bot_token: str, chat_id: str
-) -> bool:
-    """Send alert via Telegram with 3 retries. Returns True on success."""
+) -> int | None:
+    """Send alert via Telegram with 3 retries. Returns message_id on success, None on failure."""
     bot = Bot(token=bot_token)
     text = build_message(alert, headlines)
     for attempt in range(3):
         try:
             if alert.chart_path and os.path.exists(alert.chart_path):
                 with open(alert.chart_path, "rb") as photo:
-                    await bot.send_photo(
+                    msg = await bot.send_photo(
                         chat_id=chat_id, photo=photo, caption=text, parse_mode="Markdown"
                     )
             else:
-                await bot.send_message(
+                msg = await bot.send_message(
                     chat_id=chat_id, text=text, parse_mode="Markdown"
                 )
-            return True
+            return msg.message_id
         except TelegramError:
             if attempt < 2:
                 await asyncio.sleep(2 ** attempt * 2)
-    return False
+    return None
 
 
 def build_daily_report(stats: dict) -> str:

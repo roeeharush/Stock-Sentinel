@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 from stock_sentinel.models import Alert
 from stock_sentinel import db as db_module
-from stock_sentinel.db import init_db, log_alert, update_outcome, get_pending_alerts, get_daily_stats
+from stock_sentinel.db import init_db, log_alert, update_outcome, get_pending_alerts, get_daily_stats, get_active_trades, mark_tp_hit, mark_sl_hit
 
 
 @pytest.fixture(autouse=True)
@@ -120,3 +120,58 @@ def test_get_daily_stats_with_outcomes():
     assert abs(stats["win_rate"] - 2/3) < 0.001
     # EMA 200 Trend appears in both WINs → should be top factor
     assert "EMA 200 Trend" in stats["top_factors"]
+
+
+def test_log_alert_stores_telegram_message_id():
+    init_db()
+    alert, ts = _alert()
+    row_id = log_alert(alert, ts, telegram_message_id=999)
+    with db_module._connect() as conn:
+        row = conn.execute("SELECT telegram_message_id FROM alerts WHERE id=?", (row_id,)).fetchone()
+    assert row["telegram_message_id"] == 999
+
+
+def test_get_active_trades_returns_open():
+    init_db()
+    alert, ts = _alert()
+    log_alert(alert, ts)
+    trades = get_active_trades()
+    assert len(trades) == 1
+    assert trades[0]["ticker"] == "NVDA"
+    assert trades[0]["sl_hit"] == 0
+
+
+def test_get_active_trades_excludes_sl_hit():
+    init_db()
+    alert, ts = _alert()
+    row_id = log_alert(alert, ts)
+    mark_sl_hit(row_id)
+    assert get_active_trades() == []
+
+
+def test_get_active_trades_excludes_tp3_hit():
+    init_db()
+    alert, ts = _alert()
+    row_id = log_alert(alert, ts)
+    mark_tp_hit(row_id, 3)
+    assert get_active_trades() == []
+
+
+def test_mark_tp_hit_sets_column():
+    init_db()
+    alert, ts = _alert()
+    row_id = log_alert(alert, ts)
+    mark_tp_hit(row_id, 1)
+    with db_module._connect() as conn:
+        row = conn.execute("SELECT tp1_hit FROM alerts WHERE id=?", (row_id,)).fetchone()
+    assert row["tp1_hit"] == 1
+
+
+def test_mark_sl_hit_sets_column():
+    init_db()
+    alert, ts = _alert()
+    row_id = log_alert(alert, ts)
+    mark_sl_hit(row_id)
+    with db_module._connect() as conn:
+        row = conn.execute("SELECT sl_hit FROM alerts WHERE id=?", (row_id,)).fetchone()
+    assert row["sl_hit"] == 1

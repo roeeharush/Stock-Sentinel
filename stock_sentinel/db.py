@@ -36,15 +36,25 @@ def init_db() -> None:
                 horizon TEXT DEFAULT '',
                 alerted_at TEXT NOT NULL,
                 outcome TEXT DEFAULT NULL,
-                validated_at TEXT DEFAULT NULL
+                validated_at TEXT DEFAULT NULL,
+                telegram_message_id INTEGER DEFAULT NULL,
+                tp1_hit INTEGER NOT NULL DEFAULT 0,
+                tp2_hit INTEGER NOT NULL DEFAULT 0,
+                tp3_hit INTEGER NOT NULL DEFAULT 0,
+                sl_hit  INTEGER NOT NULL DEFAULT 0
             )
         """)
         # --- forward-compatible migrations ---
         for col, typedef in [
-            ("take_profit_1", "REAL DEFAULT NULL"),
-            ("take_profit_2", "REAL DEFAULT NULL"),
-            ("take_profit_3", "REAL DEFAULT NULL"),
-            ("horizon",       "TEXT DEFAULT ''"),
+            ("take_profit_1",       "REAL DEFAULT NULL"),
+            ("take_profit_2",       "REAL DEFAULT NULL"),
+            ("take_profit_3",       "REAL DEFAULT NULL"),
+            ("horizon",             "TEXT DEFAULT ''"),
+            ("telegram_message_id", "INTEGER DEFAULT NULL"),
+            ("tp1_hit",             "INTEGER NOT NULL DEFAULT 0"),
+            ("tp2_hit",             "INTEGER NOT NULL DEFAULT 0"),
+            ("tp3_hit",             "INTEGER NOT NULL DEFAULT 0"),
+            ("sl_hit",              "INTEGER NOT NULL DEFAULT 0"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} {typedef}")
@@ -52,7 +62,7 @@ def init_db() -> None:
                 pass  # column already exists
 
 
-def log_alert(alert: Alert, technical_score: int = 0) -> int:
+def log_alert(alert: Alert, technical_score: int = 0, telegram_message_id: int | None = None) -> int:
     """Insert a sent alert into the DB. Returns the new row id."""
     with _connect() as conn:
         cur = conn.execute(
@@ -60,22 +70,23 @@ def log_alert(alert: Alert, technical_score: int = 0) -> int:
                (ticker, direction, entry_price, stop_loss, take_profit,
                 take_profit_1, take_profit_2, take_profit_3,
                 rsi, technical_score, sentiment_score,
-                confluence_factors, horizon, alerted_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                confluence_factors, horizon, telegram_message_id, alerted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 alert.ticker,
                 alert.direction,
                 alert.entry,
                 alert.stop_loss,
-                alert.take_profit,          # TP2
+                alert.take_profit,
                 alert.take_profit_1,
-                alert.take_profit,          # TP2 stored in both take_profit and take_profit_2
+                alert.take_profit,
                 alert.take_profit_3,
                 alert.rsi,
                 technical_score,
                 alert.sentiment_score,
                 json.dumps(alert.confluence_factors),
                 alert.horizon,
+                telegram_message_id,
                 alert.generated_at.isoformat(),
             ),
         )
@@ -147,3 +158,40 @@ def get_daily_stats() -> dict:
         "win_rate": wins / total,
         "top_factors": top_factors,
     }
+
+
+def get_active_trades(max_age_days: int = 5) -> list[dict]:
+    """Return alerts still being monitored: outcome IS NULL, SL not hit, TP3 not hit."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT * FROM alerts
+               WHERE outcome IS NULL
+                 AND sl_hit  = 0
+                 AND tp3_hit = 0
+                 AND ticker != 'SYSTEM'
+               ORDER BY alerted_at DESC"""
+        ).fetchall()
+    now = datetime.now(timezone.utc)
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["confluence_factors"] = json.loads(d.get("confluence_factors", "[]"))
+        alerted_at = datetime.fromisoformat(d["alerted_at"])
+        if alerted_at.tzinfo is None:
+            alerted_at = alerted_at.replace(tzinfo=timezone.utc)
+        if (now - alerted_at).days <= max_age_days:
+            result.append(d)
+    return result
+
+
+def mark_tp_hit(alert_id: int, tp_num: int) -> None:
+    """Mark TP1, TP2, or TP3 as hit. tp_num must be 1, 2, or 3."""
+    col = f"tp{tp_num}_hit"
+    with _connect() as conn:
+        conn.execute(f"UPDATE alerts SET {col} = 1 WHERE id = ?", (alert_id,))
+
+
+def mark_sl_hit(alert_id: int) -> None:
+    """Mark SL as hit (trade closed at loss)."""
+    with _connect() as conn:
+        conn.execute("UPDATE alerts SET sl_hit = 1 WHERE id = ?", (alert_id,))
