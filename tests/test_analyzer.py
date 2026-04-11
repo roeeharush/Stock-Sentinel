@@ -5,7 +5,7 @@ from unittest.mock import patch
 from datetime import datetime, timezone
 from stock_sentinel.analyzer import fetch_ohlcv, compute_signals
 from stock_sentinel.models import TechnicalSignal
-from stock_sentinel.config import ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER
+from stock_sentinel.config import ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER, ATR_TP1_MULTIPLIER, ATR_TP3_MULTIPLIER, ADX_TREND_MIN, OBV_SLOPE_BARS
 
 
 def _mock_df(seed=42, rows=60, base=100.0):
@@ -101,6 +101,7 @@ def test_compute_signals_raises_on_short_dataframe():
 
 
 from stock_sentinel.analyzer import _detect_candlestick_pattern, _compute_technical_score
+from stock_sentinel.analyzer import _classify_horizon, _build_horizon_reason
 
 
 def test_compute_signals_has_new_fields():
@@ -198,3 +199,58 @@ def test_no_pattern_on_normal_candle():
     df.at[df.index[-1], "High"] = 104.5    # upper shadow = 0.5 < 2*3=6 ✓
     df.at[df.index[-1], "Low"] = 100.5     # lower shadow = 0.5 < 2*3=6 ✓
     assert _detect_candlestick_pattern(df) == ""
+
+
+def test_compute_signals_triple_targets():
+    """TP1 < TP2 (take_profit) < TP3 for LONG direction."""
+    df = _mock_df()
+    df["RSI_14"] = 25.0
+    df["SMA_20"] = df["Close"] * 0.95
+    r = compute_signals("NVDA", df)
+    assert r.direction == "LONG"
+    assert r.take_profit_1 < r.take_profit < r.take_profit_3
+    assert abs(r.take_profit_1 - (r.entry + ATR_TP1_MULTIPLIER * r.atr)) < 0.0001
+    assert abs(r.take_profit_3 - (r.entry + ATR_TP3_MULTIPLIER * r.atr)) < 0.0001
+
+
+def test_classify_horizon_short_term_volume():
+    assert _classify_horizon("LONG", True, False, False, False, False, False) == "SHORT_TERM"
+
+
+def test_classify_horizon_long_term_all_three():
+    assert _classify_horizon("LONG", False, False, False, True, True, True) == "LONG_TERM"
+
+
+def test_classify_horizon_both():
+    assert _classify_horizon("LONG", True, False, False, True, True, True) == "BOTH"
+
+
+def test_classify_horizon_none():
+    assert _classify_horizon("LONG", False, False, False, False, False, False) == ""
+
+
+def test_build_horizon_reason_short_term():
+    reason = _build_horizon_reason("SHORT_TERM", True, False, False, False, False, False)
+    assert "פריצת ווליום" in reason
+    assert "2-14" in reason
+
+
+def test_build_horizon_reason_long_term():
+    reason = _build_horizon_reason("LONG_TERM", False, False, False, True, True, True)
+    assert "EMA 200" in reason
+    assert "ארוך" in reason
+
+
+def test_build_horizon_reason_empty_when_no_horizon():
+    assert _build_horizon_reason("", False, False, False, False, False, False) == ""
+
+
+def test_compute_signals_horizon_field_present():
+    """horizon field is populated and valid."""
+    result = compute_signals("NVDA", _mock_df())
+    assert result.horizon in ("SHORT_TERM", "LONG_TERM", "BOTH", "")
+    assert isinstance(result.horizon_reason, str)
+    assert isinstance(result.bb_breakout, bool)
+    assert isinstance(result.adx_strong, bool)
+    assert isinstance(result.obv_rising, bool)
+    assert isinstance(result.stochrsi_crossover, bool)
