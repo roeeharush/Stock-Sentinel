@@ -41,7 +41,7 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
             lines.append(f"  • {translated}")
 
     if alert.confluence_factors:
-        lines += ["", "🎯 *גורמי מכנס*"]
+        lines += ["", "🎯 *גורמי התכנסות הטרייד*"]
         for f in alert.confluence_factors:
             translated = translate_to_hebrew(f)
             lines.append(f"  ✅ {translated}")

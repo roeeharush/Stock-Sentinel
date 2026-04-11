@@ -40,7 +40,7 @@ TRADING_GLOSSARY: dict[str, str] = {
     "EMA 200 Trend": "מגמת EMA 200",
     "Price below EMA 200": "מחיר מתחת ל-EMA 200",
     # Confluence
-    "Confluence": "גורמים מאשרים",
+    "Confluence": "גורמי התכנסות הטרייד",
 }
 
 # Sort by length descending so multi-word terms (e.g. "Short Squeeze") match before
