@@ -12,7 +12,9 @@ from stock_sentinel.scraper import init_browser, scrape_sentiment, close_browser
 from stock_sentinel.news_scraper import fetch_news_sentiment
 from stock_sentinel.rss_provider import fetch_rss_sentiment
 from stock_sentinel.signal_filter import combined_sentiment_score, should_alert, update_cooldown
-from stock_sentinel.notifier import generate_chart, send_alert
+from stock_sentinel.notifier import generate_chart, send_alert, send_daily_report
+from stock_sentinel.db import init_db, log_alert, get_daily_stats
+from stock_sentinel.validator import validate_daily
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -85,6 +87,7 @@ async def _async_cycle(
                 alert, headlines, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
             )
             if success:
+                log_alert(alert, technical_score=snap.technical.technical_score)
                 state[ticker] = update_cooldown(snap)
                 log.info("Alert sent: %s %s", ticker, snap.technical.direction)
 
@@ -132,10 +135,34 @@ async def _run_with_browser(state: dict[str, TickerSnapshot]) -> None:
             await close_browser(pw, browser)
 
 
+def run_validation() -> None:
+    """Synchronous APScheduler entry point for the daily validator."""
+    try:
+        result = validate_daily()
+        log.info("Validation complete: %s", result)
+    except Exception as exc:
+        log.error("Validation failed: %s", exc)
+
+
+def run_daily_report() -> None:
+    """Synchronous APScheduler entry point for the daily performance report."""
+    try:
+        stats = get_daily_stats()
+        asyncio.run(
+            send_daily_report(stats, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
+        )
+        log.info("Daily report sent. Win rate: %.0f%%", stats.get("win_rate", 0) * 100)
+    except Exception as exc:
+        log.error("Daily report failed: %s", exc)
+
+
 def main() -> None:
     validate_secrets()
+    init_db()
     state: dict[str, TickerSnapshot] = {}
     scheduler = BlockingScheduler(timezone="America/New_York")
+
+    # Intraday monitoring: every 15 min, 9:00–15:45 ET, Mon–Fri
     scheduler.add_job(
         run_cycle,
         CronTrigger(
@@ -146,6 +173,29 @@ def main() -> None:
         ),
         args=[state],
     )
+
+    # Post-market validator: 16:30 ET, Mon–Fri
+    scheduler.add_job(
+        run_validation,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour="16",
+            minute="30",
+            timezone="America/New_York",
+        ),
+    )
+
+    # Daily performance report: 17:00 ET, Mon–Fri
+    scheduler.add_job(
+        run_daily_report,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour="17",
+            minute="0",
+            timezone="America/New_York",
+        ),
+    )
+
     log.info("Stock Sentinel started. Watching: %s", ", ".join(config.WATCHLIST))
     try:
         scheduler.start()

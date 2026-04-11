@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-from stock_sentinel.notifier import build_message, generate_chart, send_alert
+from stock_sentinel.notifier import build_message, generate_chart, send_alert, build_daily_report, send_daily_report
 from stock_sentinel.models import Alert, TechnicalSignal
 
 
@@ -97,3 +97,35 @@ async def test_send_alert_returns_false_on_failure():
         mock_bot_instance.send_photo = AsyncMock(side_effect=TelegramError("fail"))
         result = await send_alert(alert, headlines, "fake_token", "fake_chat")
     assert result is False
+
+
+def test_build_daily_report_no_alerts():
+    msg = build_daily_report({"total": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "top_factors": []})
+    assert "לא נשלחו" in msg
+
+
+def test_build_daily_report_with_stats():
+    stats = {
+        "total": 5, "wins": 4, "losses": 1, "win_rate": 0.8,
+        "top_factors": ["EMA 200 Trend", "Volume Spike"],
+    }
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_daily_report(stats)
+    assert "5" in msg
+    assert "4" in msg
+    assert "80%" in msg
+    assert "EMA 200 Trend" in msg
+    assert "Volume Spike" in msg
+
+
+@pytest.mark.asyncio
+async def test_send_daily_report_success():
+    stats = {"total": 3, "wins": 2, "losses": 1, "win_rate": 2/3, "top_factors": []}
+    with patch("stock_sentinel.notifier.Bot") as MockBot, \
+         patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(return_value=MagicMock())
+        result = await send_daily_report(stats, "fake_token", "fake_chat")
+    assert result is True
+    mock_instance.send_message.assert_called_once()

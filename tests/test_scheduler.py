@@ -72,6 +72,7 @@ async def test_async_cycle_happy_path():
         patch("stock_sentinel.scheduler.send_alert",
               new_callable=AsyncMock,
               return_value=True) as mock_notify,
+        patch("stock_sentinel.scheduler.log_alert") as mock_log_alert,
         patch("stock_sentinel.scheduler.update_cooldown",
               side_effect=lambda s: s) as mock_cooldown,
     ):
@@ -181,3 +182,33 @@ async def test_async_cycle_unexpected_exception_continues():
 
     # generate_chart raised, so no alert sent
     mock_notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_async_cycle_logs_alert_on_success():
+    """After a successful alert send, log_alert must be called once."""
+    from stock_sentinel.scheduler import _async_cycle
+
+    state = {}
+    mock_page = AsyncMock()
+
+    with (
+        patch("stock_sentinel.scheduler.scrape_sentiment",
+              new_callable=AsyncMock, return_value=_make_sentiment("NVDA")),
+        patch("stock_sentinel.scheduler.fetch_news_sentiment",
+              return_value=_make_news("NVDA")),
+        patch("stock_sentinel.scheduler.fetch_rss_sentiment",
+              return_value=_make_rss("NVDA")),
+        patch("stock_sentinel.scheduler.fetch_ohlcv", return_value=MagicMock()),
+        patch("stock_sentinel.scheduler.compute_signals",
+              return_value=_make_signal("NVDA")),
+        patch("stock_sentinel.scheduler.should_alert", return_value=True),
+        patch("stock_sentinel.scheduler.generate_chart", return_value="/tmp/c.png"),
+        patch("stock_sentinel.scheduler.send_alert",
+              new_callable=AsyncMock, return_value=True),
+        patch("stock_sentinel.scheduler.log_alert") as mock_log_alert,
+        patch("stock_sentinel.scheduler.update_cooldown", side_effect=lambda s: s),
+    ):
+        await _async_cycle(["NVDA"], state, mock_page)
+
+    mock_log_alert.assert_called_once()

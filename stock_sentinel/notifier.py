@@ -103,3 +103,47 @@ async def send_alert(
             if attempt < 2:
                 await asyncio.sleep(2 ** attempt * 2)
     return False
+
+
+def build_daily_report(stats: dict) -> str:
+    """Build Hebrew daily performance summary message."""
+    total = stats.get("total", 0)
+    wins = stats.get("wins", 0)
+    losses = stats.get("losses", 0)
+    win_rate = stats.get("win_rate", 0.0)
+    top_factors = stats.get("top_factors", [])
+
+    if total == 0:
+        return "📊 *דוח יומי — Stock Sentinel*\n\nלא נשלחו התראות היום."
+
+    lines = [
+        "📊 *דוח ביצועים יומי — Stock Sentinel*",
+        "",
+        f"  סה\"כ עסקאות: `{total}`",
+        f"  ✅ הצלחות:   `{wins}`",
+        f"  ❌ כישלונות: `{losses}`",
+        f"  🎯 אחוז הצלחה: `{win_rate:.0%}`",
+    ]
+
+    if top_factors:
+        lines += ["", "🏆 *גורמי מכנס מובילים (WIN)*"]
+        for i, factor in enumerate(top_factors, 1):
+            translated = translate_to_hebrew(factor)
+            lines.append(f"  {i}. {translated}")
+
+    lines += [
+        "",
+        f"⏰ _{datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC_",
+    ]
+    return "\n".join(lines)
+
+
+async def send_daily_report(stats: dict, bot_token: str, chat_id: str) -> bool:
+    """Send daily performance report via Telegram. Returns True on success."""
+    bot = Bot(token=bot_token)
+    text = build_daily_report(stats)
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        return True
+    except TelegramError:
+        return False
