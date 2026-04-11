@@ -21,6 +21,15 @@ class NewsSentimentResult:
     failed: bool = False
 
 @dataclass
+class RssSentimentResult:
+    ticker: str
+    headlines: list[str]
+    score: float
+    headline_count: int
+    fetched_at: datetime
+    failed: bool = False
+
+@dataclass
 class TechnicalSignal:
     ticker: str
     rsi: float
@@ -38,6 +47,7 @@ class TickerSnapshot:
     ticker: str
     sentiment: SentimentResult | None = None
     news_sentiment: NewsSentimentResult | None = None
+    rss_sentiment: RssSentimentResult | None = None
     technical: TechnicalSignal | None = None
     last_alert_at: datetime | None = None
 

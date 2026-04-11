@@ -58,3 +58,15 @@ def test_ticker_snapshot_has_news_sentiment():
     )
     snap.news_sentiment = ns
     assert snap.news_sentiment.score == 0.5
+
+
+def test_ticker_snapshot_has_rss_sentiment():
+    from stock_sentinel.models import RssSentimentResult
+    snap = TickerSnapshot(ticker="NVDA")
+    assert snap.rss_sentiment is None
+    rs = RssSentimentResult(
+        ticker="NVDA", headlines=["NVDA surges"], score=0.5,
+        headline_count=1, fetched_at=datetime.now(timezone.utc),
+    )
+    snap.rss_sentiment = rs
+    assert snap.rss_sentiment.score == 0.5
