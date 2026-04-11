@@ -14,6 +14,7 @@ from stock_sentinel.rss_provider import fetch_rss_sentiment
 from stock_sentinel.signal_filter import combined_sentiment_score, should_alert, update_cooldown
 from stock_sentinel.notifier import generate_chart, send_alert, send_daily_report
 from stock_sentinel.db import init_db, log_alert, get_daily_stats
+from stock_sentinel.monitor import check_active_trades
 from stock_sentinel.validator import validate_daily
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -87,11 +88,15 @@ async def _async_cycle(
                 chart_path=chart_path,
             )
 
-            success = await send_alert(
+            message_id = await send_alert(
                 alert, headlines, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
             )
-            if success:
-                log_alert(alert, technical_score=snap.technical.technical_score)
+            if message_id is not None:
+                log_alert(
+                    alert,
+                    technical_score=snap.technical.technical_score,
+                    telegram_message_id=message_id,
+                )
                 state[ticker] = update_cooldown(snap)
                 log.info("Alert sent: %s %s", ticker, snap.technical.direction)
 
@@ -160,6 +165,18 @@ def run_daily_report() -> None:
         log.error("Daily report failed: %s", exc)
 
 
+def run_monitor() -> None:
+    """Synchronous APScheduler entry point for the live trade monitor."""
+    try:
+        result = asyncio.run(
+            check_active_trades(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
+        )
+        if result["updates_sent"]:
+            log.info("Monitor: sent %d trade update(s)", result["updates_sent"])
+    except Exception as exc:
+        log.error("Monitor run failed: %s", exc)
+
+
 def main() -> None:
     validate_secrets()
     init_db()
@@ -196,6 +213,17 @@ def main() -> None:
             day_of_week="mon-fri",
             hour="17",
             minute="0",
+            timezone="America/New_York",
+        ),
+    )
+
+    # Live trade monitor: every 2 minutes, 9:30–16:00 ET, Mon–Fri
+    scheduler.add_job(
+        run_monitor,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour="9-15",
+            minute="*/2",
             timezone="America/New_York",
         ),
     )

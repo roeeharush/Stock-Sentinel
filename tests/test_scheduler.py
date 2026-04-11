@@ -71,7 +71,7 @@ async def test_async_cycle_happy_path():
               return_value="/tmp/chart.png") as mock_chart,
         patch("stock_sentinel.scheduler.send_alert",
               new_callable=AsyncMock,
-              return_value=True) as mock_notify,
+              return_value=42) as mock_notify,
         patch("stock_sentinel.scheduler.log_alert") as mock_log_alert,
         patch("stock_sentinel.scheduler.update_cooldown",
               side_effect=lambda s: s) as mock_cooldown,
@@ -138,7 +138,7 @@ async def test_circuit_breaker_triggers_after_n_failures():
               return_value=_make_news("T1")),
         patch("stock_sentinel.scheduler.send_alert",
               new_callable=AsyncMock,
-              return_value=True) as mock_notify,
+              return_value=42) as mock_notify,
     ):
         await _async_cycle(tickers, state, mock_page)
 
@@ -205,7 +205,7 @@ async def test_async_cycle_logs_alert_on_success():
         patch("stock_sentinel.scheduler.should_alert", return_value=True),
         patch("stock_sentinel.scheduler.generate_chart", return_value="/tmp/c.png"),
         patch("stock_sentinel.scheduler.send_alert",
-              new_callable=AsyncMock, return_value=True),
+              new_callable=AsyncMock, return_value=42),
         patch("stock_sentinel.scheduler.log_alert") as mock_log_alert,
         patch("stock_sentinel.scheduler.update_cooldown", side_effect=lambda s: s),
     ):
