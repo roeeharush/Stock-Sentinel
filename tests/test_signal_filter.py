@@ -32,6 +32,7 @@ def _snap(
             ticker="NVDA", rsi=25.0, ma_20=800.0, ma_50=780.0, atr=12.0,
             entry=810.0, stop_loss=792.0, take_profit=846.0,
             direction=direction, analyzed_at=now,
+            technical_score=80,
         ),
         last_alert_at=(
             now - timedelta(minutes=last_alert_minutes_ago)
@@ -109,3 +110,17 @@ def test_update_cooldown_stamps_now():
     assert updated.last_alert_at is not None
     delta = datetime.now(timezone.utc) - updated.last_alert_at
     assert delta.total_seconds() < 2
+
+
+def test_low_technical_score_no_alert():
+    """TechnicalScore below threshold suppresses alert regardless of sentiment."""
+    snap = _snap()
+    snap.technical.technical_score = 40  # below TECHNICAL_SCORE_MIN=60
+    assert should_alert(snap) is False
+
+
+def test_technical_score_at_threshold_alerts():
+    """TechnicalScore exactly at threshold allows alert."""
+    snap = _snap()
+    snap.technical.technical_score = 60  # exactly at threshold
+    assert should_alert(snap) is True

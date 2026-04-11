@@ -26,6 +26,21 @@ TRADING_GLOSSARY: dict[str, str] = {
     "Short Squeeze": "שורט סקוויז",
     "Resistance": "רמת התנגדות",
     "Support": "רמת תמיכה",
+    # Candlestick Patterns
+    "Bullish Engulfing": "תבנית בליעה שורית",
+    "Engulfing": "תבנית בליעה",
+    "Hammer": "פטיש (תבנית נרות)",
+    "Shooting Star": "כוכב נופל (תבנית נרות)",
+    # Volume & VWAP
+    "Volume Spike": "פריצת ווליום",
+    "VWAP": "מחיר ממוצע משוקלל לפי נפח",
+    # Momentum
+    "MACD Bullish": "מד מומנטום עולה (MACD)",
+    "MACD Bearish": "מד מומנטום יורד (MACD)",
+    "EMA 200 Trend": "מגמת EMA 200",
+    "Price below EMA 200": "מחיר מתחת ל-EMA 200",
+    # Confluence
+    "Confluence": "גורמים מאשרים",
 }
 
 # Sort by length descending so multi-word terms (e.g. "Short Squeeze") match before

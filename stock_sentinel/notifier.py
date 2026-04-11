@@ -40,6 +40,12 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
             translated = translate_to_hebrew(h)
             lines.append(f"  • {translated}")
 
+    if alert.confluence_factors:
+        lines += ["", "🎯 *גורמי מכנס*"]
+        for f in alert.confluence_factors:
+            translated = translate_to_hebrew(f)
+            lines.append(f"  ✅ {translated}")
+
     lines += [
         "",
         f"⏰ _{datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC_",

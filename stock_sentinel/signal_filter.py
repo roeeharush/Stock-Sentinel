@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from stock_sentinel.models import TickerSnapshot
+from stock_sentinel import config
 from stock_sentinel.config import (
     SENTIMENT_MIN_TWEETS, SENTIMENT_MIN_HEADLINES,
     SENTIMENT_MIN_RSS_HEADLINES, COOLDOWN_MINUTES,
@@ -50,6 +51,9 @@ def combined_sentiment_score(snapshot: TickerSnapshot) -> float:
 def should_alert(snapshot: TickerSnapshot) -> bool:
     t = snapshot.technical
     if t is None or t.direction == "NEUTRAL":
+        return False
+
+    if t.technical_score < config.TECHNICAL_SCORE_MIN:
         return False
 
     if not _twitter_ok(snapshot) and not _news_ok(snapshot) and not _rss_ok(snapshot):
