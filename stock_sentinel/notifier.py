@@ -29,7 +29,7 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
         "",
         "🧠 *תחושת שוק* (RSS 40% | חדשות 40% | סושיאל 20%)",
         f"  ציון משולב: `{alert.sentiment_score:+.2f}`",
-        f"  RSS:        `{alert.news_score:+.2f}`",
+        f"  RSS:        `{alert.rss_score:+.2f}`",
         f"  חדשות:      `{alert.news_score:+.2f}`",
         f"  סושיאל:     `{alert.twitter_score:+.2f}`",
     ]

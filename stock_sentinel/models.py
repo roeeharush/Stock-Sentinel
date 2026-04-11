@@ -59,8 +59,9 @@ class Alert:
     stop_loss: float
     take_profit: float
     rsi: float
-    sentiment_score: float      # combined 60/40 weighted score
-    twitter_score: float = 0.0  # raw twitter component
-    news_score: float = 0.0     # raw news component
+    sentiment_score: float      # combined 40/40/20 weighted score
+    twitter_score: float = 0.0  # raw twitter component (20%)
+    news_score: float = 0.0     # raw yfinance news component (40%)
+    rss_score: float = 0.0      # raw RSS component (40%)
     chart_path: str | None = None
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

@@ -76,6 +76,7 @@ async def _async_cycle(
                 sentiment_score=score,
                 twitter_score=snap.sentiment.score if snap.sentiment else 0.0,
                 news_score=snap.news_sentiment.score if snap.news_sentiment else 0.0,
+                rss_score=snap.rss_sentiment.score if snap.rss_sentiment else 0.0,
                 chart_path=chart_path,
             )
 
