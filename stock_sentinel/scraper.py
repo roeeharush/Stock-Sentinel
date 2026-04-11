@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 from playwright.async_api import Browser, Page
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 from stock_sentinel.models import SentimentResult
 
 BULLISH_TERMS = {"buy", "bullish", "long", "breakout", "upside", "calls", "rally", "dip"}
@@ -27,7 +27,7 @@ async def init_browser(cookies_path: str) -> tuple[Any, Browser, Page]:
     browser = await pw.chromium.launch(headless=True)
     context = await browser.new_context()
     page = await context.new_page()
-    await stealth_async(page)
+    await Stealth().apply_stealth_async(page)
     if os.path.exists(cookies_path):
         with open(cookies_path) as f:
             await context.add_cookies(json.load(f))
