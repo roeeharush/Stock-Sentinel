@@ -1,3 +1,4 @@
+import logging
 import os
 import tempfile
 import asyncio
@@ -10,6 +11,8 @@ from telegram import Bot
 from telegram.error import TelegramError
 from stock_sentinel.models import Alert, TechnicalSignal
 from stock_sentinel.translator import translate_to_hebrew
+
+log = logging.getLogger(__name__)
 
 
 def build_message(alert: Alert, headlines: list[str]) -> str:
@@ -164,4 +167,59 @@ async def send_daily_report(stats: dict, bot_token: str, chat_id: str) -> bool:
         await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
         return True
     except TelegramError:
+        return False
+
+
+async def send_trade_update(
+    trade: dict,
+    update_type: str,
+    current_price: float,
+    bot_token: str,
+    chat_id: str,
+) -> bool:
+    """Send a threaded trade update reply to the original alert message.
+
+    update_type: 'TP1', 'TP2', 'TP3', or 'SL'.
+    Uses reply_to_message_id so it threads under the original alert.
+    Returns True on success.
+    """
+    ticker = trade.get("ticker", "?")
+    message_id = trade.get("telegram_message_id")
+
+    if update_type == "SL":
+        text = (
+            f"🔔 *עדכון טרייד: {ticker}*\n\n"
+            f"🛑 *סטופ לוס הופעל. סגירת פוזיציה.*\n"
+            f"  מחיר נוכחי: `${current_price:.2f}`\n\n"
+            f"📊 *סטטוס:* הטרייד נסגר."
+        )
+    elif update_type in ("TP1", "TP2", "TP3"):
+        _tp_info = {
+            "TP1": ("1", "שמרני",  "הטרייד ממשיך ליעד הבא 🎯"),
+            "TP2": ("2", "מתון",   "הטרייד ממשיך ליעד הבא 🎯"),
+            "TP3": ("3", "שאפתני", "נסגר ברווח מקסימלי 🏆"),
+        }
+        tp_num, tp_label, status = _tp_info[update_type]
+        text = (
+            f"🔔 *עדכון טרייד: {ticker}*\n\n"
+            f"✅ *יעד {tp_num} ({tp_label}) הושג!*\n"
+            f"  מחיר: `${current_price:.2f}`\n\n"
+            f"📊 *סטטוס:* {status}"
+        )
+    else:
+        return False
+
+    bot = Bot(token=bot_token)
+    try:
+        kwargs: dict = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+        }
+        if message_id:
+            kwargs["reply_to_message_id"] = int(message_id)
+        await bot.send_message(**kwargs)
+        return True
+    except TelegramError as exc:
+        log.warning("send_trade_update failed for %s %s: %s", ticker, update_type, exc)
         return False

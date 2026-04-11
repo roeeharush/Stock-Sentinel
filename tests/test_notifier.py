@@ -148,3 +148,44 @@ async def test_send_daily_report_success():
         result = await send_daily_report(stats, "fake_token", "fake_chat")
     assert result is True
     mock_instance.send_message.assert_called_once()
+
+
+from stock_sentinel.notifier import send_trade_update
+
+
+@pytest.mark.asyncio
+async def test_send_trade_update_sl():
+    trade = {"ticker": "NVDA", "telegram_message_id": 42}
+    with patch("stock_sentinel.notifier.Bot") as MockBot:
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(return_value=MagicMock())
+        result = await send_trade_update(trade, "SL", 878.0, "token", "chat")
+    assert result is True
+    call_kwargs = mock_instance.send_message.call_args.kwargs
+    assert call_kwargs.get("reply_to_message_id") == 42
+    assert "סטופ" in call_kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_send_trade_update_tp1():
+    trade = {"ticker": "NVDA", "telegram_message_id": None}
+    with patch("stock_sentinel.notifier.Bot") as MockBot:
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(return_value=MagicMock())
+        result = await send_trade_update(trade, "TP1", 913.5, "token", "chat")
+    assert result is True
+    assert "reply_to_message_id" not in mock_instance.send_message.call_args.kwargs
+    assert "יעד 1" in mock_instance.send_message.call_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_send_trade_update_tp3_status():
+    trade = {"ticker": "NVDA", "telegram_message_id": 10}
+    with patch("stock_sentinel.notifier.Bot") as MockBot:
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(return_value=MagicMock())
+        await send_trade_update(trade, "TP3", 945.0, "token", "chat")
+    assert "מקסימלי" in mock_instance.send_message.call_args.kwargs["text"]
