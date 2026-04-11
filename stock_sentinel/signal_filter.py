@@ -4,6 +4,7 @@ from stock_sentinel import config
 from stock_sentinel.config import (
     SENTIMENT_MIN_TWEETS, SENTIMENT_MIN_HEADLINES,
     SENTIMENT_MIN_RSS_HEADLINES, COOLDOWN_MINUTES,
+    WEIGHT_RSS, WEIGHT_NEWS, WEIGHT_TWITTER,
 )
 
 
@@ -38,11 +39,11 @@ def combined_sentiment_score(snapshot: TickerSnapshot) -> float:
     # Build weighted sum from available sources
     weights = {}
     if r_ok:
-        weights["rss"] = (0.40, snapshot.rss_sentiment.score)
+        weights["rss"] = (WEIGHT_RSS, snapshot.rss_sentiment.score)
     if n_ok:
-        weights["news"] = (0.40, snapshot.news_sentiment.score)
+        weights["news"] = (WEIGHT_NEWS, snapshot.news_sentiment.score)
     if t_ok:
-        weights["twitter"] = (0.20, snapshot.sentiment.score)
+        weights["twitter"] = (WEIGHT_TWITTER, snapshot.sentiment.score)
 
     total_weight = sum(w for w, _ in weights.values())
     return sum((w / total_weight) * s for w, s in weights.values())

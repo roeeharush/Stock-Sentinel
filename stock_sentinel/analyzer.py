@@ -9,6 +9,11 @@ from stock_sentinel.config import (
     ATR_SL_MULTIPLIER,
     ATR_TP_MULTIPLIER,
     VOLUME_SPIKE_MULTIPLIER,
+    SCORE_WEIGHT_EMA200,
+    SCORE_WEIGHT_PATTERN,
+    SCORE_WEIGHT_VOLUME,
+    SCORE_WEIGHT_RSI,
+    SCORE_WEIGHT_MACD,
 )
 
 
@@ -93,36 +98,36 @@ def _compute_technical_score(
 
     if direction == "LONG":
         if ema_200_above:
-            score += 25
+            score += SCORE_WEIGHT_EMA200
             factors.append("EMA 200 Trend")
         if pattern in ("Bullish Engulfing", "Hammer"):
-            score += 20
+            score += SCORE_WEIGHT_PATTERN
             factors.append(f"Pattern: {pattern}")
         if volume_spike:
-            score += 20
+            score += SCORE_WEIGHT_VOLUME
             factors.append("Volume Spike")
         if rsi < 50:
-            score += 20
+            score += SCORE_WEIGHT_RSI
             factors.append(f"RSI {rsi:.1f} (bullish zone)")
         if macd_bullish:
-            score += 15
+            score += SCORE_WEIGHT_MACD
             factors.append("MACD Bullish")
 
     elif direction == "SHORT":
         if not ema_200_above:
-            score += 25
+            score += SCORE_WEIGHT_EMA200
             factors.append("Price below EMA 200")
         if pattern == "Shooting Star":
-            score += 20
+            score += SCORE_WEIGHT_PATTERN
             factors.append(f"Pattern: {pattern}")
         if volume_spike:
-            score += 20
+            score += SCORE_WEIGHT_VOLUME
             factors.append("Volume Spike")
         if rsi > 50:
-            score += 20
+            score += SCORE_WEIGHT_RSI
             factors.append(f"RSI {rsi:.1f} (bearish zone)")
         if not macd_bullish:
-            score += 15
+            score += SCORE_WEIGHT_MACD
             factors.append("MACD Bearish")
 
     return score, factors

@@ -24,6 +24,20 @@ TECHNICAL_SCORE_MIN: int = 60        # minimum confluence score to trigger an al
 VOLUME_SPIKE_MULTIPLIER: float = 2.0  # volume must exceed N× 20-period average
 
 
+# --- Calibration weights (adjust based on validator findings) ---
+# Sentiment fusion weights (must sum to 1.0)
+WEIGHT_RSS: float = 0.40
+WEIGHT_NEWS: float = 0.40
+WEIGHT_TWITTER: float = 0.20
+
+# Technical confluence score weights (sum = 100)
+SCORE_WEIGHT_EMA200: int = 25
+SCORE_WEIGHT_PATTERN: int = 20
+SCORE_WEIGHT_VOLUME: int = 20
+SCORE_WEIGHT_RSI: int = 20
+SCORE_WEIGHT_MACD: int = 15
+
+
 def validate_secrets() -> None:
     """Call from scheduler.main() before starting the loop."""
     missing = [k for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
