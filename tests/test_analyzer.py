@@ -98,3 +98,103 @@ def test_compute_signals_raises_on_short_dataframe():
     df = _mock_df(rows=30)
     with pytest.raises(ValueError, match="too short"):
         compute_signals("NVDA", df)
+
+
+from stock_sentinel.analyzer import _detect_candlestick_pattern, _compute_technical_score
+
+
+def test_compute_signals_has_new_fields():
+    """New TechnicalSignal fields are present with valid types."""
+    result = compute_signals("NVDA", _mock_df())
+    assert isinstance(result.technical_score, int)
+    assert 0 <= result.technical_score <= 100
+    assert isinstance(result.confluence_factors, list)
+    assert result.candlestick_pattern in ("", "Bullish Engulfing", "Hammer", "Shooting Star")
+    assert isinstance(result.volume_spike, bool)
+    assert isinstance(result.macd_bullish, bool)
+    assert result.vwap > 0
+    assert result.ema_200 >= 0.0
+
+
+def test_volume_spike_detected():
+    """Volume spike when last bar volume > 2x rolling mean."""
+    df = _mock_df(rows=60)
+    df.iloc[-1, df.columns.get_loc("Volume")] = 20_000_000  # ~4-8x normal
+    result = compute_signals("NVDA", df)
+    assert result.volume_spike is True
+
+
+def test_no_volume_spike_uniform():
+    """No spike when all volumes are equal."""
+    df = _mock_df(rows=60)
+    df["Volume"] = 2_000_000
+    result = compute_signals("NVDA", df)
+    assert result.volume_spike is False
+
+
+def test_technical_score_increases_with_volume_spike():
+    """Adding a volume spike increases TechnicalScore when direction is not NEUTRAL."""
+    df = _mock_df(rows=60)
+    df["RSI_14"] = 25.0
+    df["SMA_20"] = df["Close"] * 0.95
+    r1 = compute_signals("NVDA", df)
+    df2 = df.copy()
+    df2.iloc[-1, df2.columns.get_loc("Volume")] = 20_000_000
+    r2 = compute_signals("NVDA", df2)
+    # r2 has volume spike; r1 doesn't — score should be at least as high
+    if r1.direction != "NEUTRAL":
+        assert r2.technical_score >= r1.technical_score
+
+
+def test_bullish_engulfing_detected():
+    """Bullish engulfing: prev bearish, current bullish and fully covers prev body."""
+    df = _mock_df(rows=60)
+    prev_idx = df.index[-2]
+    curr_idx = df.index[-1]
+    # Previous bar: bearish
+    df.at[prev_idx, "Open"] = 102.0
+    df.at[prev_idx, "Close"] = 100.0
+    df.at[prev_idx, "High"] = 103.0
+    df.at[prev_idx, "Low"] = 99.0
+    # Current bar: bullish, engulfs prev
+    df.at[curr_idx, "Open"] = 99.5    # <= prev_close (100.0)
+    df.at[curr_idx, "Close"] = 103.0  # >= prev_open (102.0)
+    df.at[curr_idx, "High"] = 104.0
+    df.at[curr_idx, "Low"] = 99.0
+    assert _detect_candlestick_pattern(df) == "Bullish Engulfing"
+
+
+def test_hammer_detected():
+    """Hammer: small body, long lower shadow, tiny upper shadow."""
+    df = _mock_df(rows=60)
+    df.at[df.index[-1], "Open"] = 102.0
+    df.at[df.index[-1], "Close"] = 102.5   # body = 0.5
+    df.at[df.index[-1], "High"] = 102.6    # upper shadow = 0.1
+    df.at[df.index[-1], "Low"] = 97.0      # lower shadow = 5.0 >= 2*0.5 ✓
+    assert _detect_candlestick_pattern(df) == "Hammer"
+
+
+def test_shooting_star_detected():
+    """Shooting Star: small body, long upper shadow, tiny lower shadow."""
+    df = _mock_df(rows=60)
+    df.at[df.index[-1], "Open"] = 102.0
+    df.at[df.index[-1], "Close"] = 102.5   # body = 0.5
+    df.at[df.index[-1], "High"] = 108.0    # upper shadow = 5.5 >= 2*0.5 ✓
+    df.at[df.index[-1], "Low"] = 101.95    # lower shadow = 0.05 <= 0.1*(108-101.95) ✓
+    assert _detect_candlestick_pattern(df) == "Shooting Star"
+
+
+def test_no_pattern_on_normal_candle():
+    """A strong trending candle with symmetric shadows has no pattern."""
+    df = _mock_df(rows=60)
+    # Previous: bullish (not bearish, so no engulfing)
+    df.at[df.index[-2], "Open"] = 98.0
+    df.at[df.index[-2], "Close"] = 101.0
+    df.at[df.index[-2], "High"] = 102.0
+    df.at[df.index[-2], "Low"] = 97.0
+    # Current: strong bullish, symmetric shadows
+    df.at[df.index[-1], "Open"] = 101.0
+    df.at[df.index[-1], "Close"] = 104.0   # body = 3.0
+    df.at[df.index[-1], "High"] = 104.5    # upper shadow = 0.5 < 2*3=6 ✓
+    df.at[df.index[-1], "Low"] = 100.5     # lower shadow = 0.5 < 2*3=6 ✓
+    assert _detect_candlestick_pattern(df) == ""
