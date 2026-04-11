@@ -1,6 +1,9 @@
 from datetime import datetime, timedelta, timezone
 from stock_sentinel.models import TickerSnapshot
-from stock_sentinel.config import SENTIMENT_MIN_TWEETS, SENTIMENT_MIN_HEADLINES, COOLDOWN_MINUTES
+from stock_sentinel.config import (
+    SENTIMENT_MIN_TWEETS, SENTIMENT_MIN_HEADLINES,
+    SENTIMENT_MIN_RSS_HEADLINES, COOLDOWN_MINUTES,
+)
 
 
 def _twitter_ok(snapshot: TickerSnapshot) -> bool:
@@ -13,25 +16,35 @@ def _news_ok(snapshot: TickerSnapshot) -> bool:
     return n is not None and not n.failed and n.headline_count >= SENTIMENT_MIN_HEADLINES
 
 
-def combined_sentiment_score(snapshot: TickerSnapshot) -> float:
-    """Return 60/40 (news/twitter) weighted score with graceful degradation.
+def _rss_ok(snapshot: TickerSnapshot) -> bool:
+    r = snapshot.rss_sentiment
+    return r is not None and not r.failed and r.headline_count >= SENTIMENT_MIN_RSS_HEADLINES
 
-    Degradation rules:
-    - Both available: 0.6 * news + 0.4 * twitter
-    - Only news available: news score (100%)
-    - Only twitter available: twitter score (100%)
-    - Neither available: 0.0
+
+def combined_sentiment_score(snapshot: TickerSnapshot) -> float:
+    """Return 40/40/20 (RSS/news/twitter) weighted score with graceful degradation.
+
+    Degradation: weights of unavailable sources are redistributed proportionally
+    among available sources.
     """
     t_ok = _twitter_ok(snapshot)
     n_ok = _news_ok(snapshot)
+    r_ok = _rss_ok(snapshot)
 
-    if t_ok and n_ok:
-        return 0.6 * snapshot.news_sentiment.score + 0.4 * snapshot.sentiment.score
-    elif n_ok:
-        return snapshot.news_sentiment.score
-    elif t_ok:
-        return snapshot.sentiment.score
-    return 0.0
+    if not t_ok and not n_ok and not r_ok:
+        return 0.0
+
+    # Build weighted sum from available sources
+    weights = {}
+    if r_ok:
+        weights["rss"] = (0.40, snapshot.rss_sentiment.score)
+    if n_ok:
+        weights["news"] = (0.40, snapshot.news_sentiment.score)
+    if t_ok:
+        weights["twitter"] = (0.20, snapshot.sentiment.score)
+
+    total_weight = sum(w for w, _ in weights.values())
+    return sum((w / total_weight) * s for w, s in weights.values())
 
 
 def should_alert(snapshot: TickerSnapshot) -> bool:
@@ -39,7 +52,7 @@ def should_alert(snapshot: TickerSnapshot) -> bool:
     if t is None or t.direction == "NEUTRAL":
         return False
 
-    if not _twitter_ok(snapshot) and not _news_ok(snapshot):
+    if not _twitter_ok(snapshot) and not _news_ok(snapshot) and not _rss_ok(snapshot):
         return False
 
     score = combined_sentiment_score(snapshot)
