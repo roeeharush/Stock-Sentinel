@@ -9,7 +9,7 @@ Automated US equity monitoring pipeline — scrapes X/Twitter & financial news s
 - **Technical Analysis** — RSI(14), SMA20/SMA50, ATR(14) via yfinance + pandas-ta. Computes Entry, Stop Loss (1.5× ATR), and Take Profit (3× ATR) levels.
 - **Dual Sentiment Fusion** — Combines X/Twitter scraping (40% weight) and yfinance news headlines (60% weight) into a single convergence score. Alerts only fire when technical direction and combined sentiment agree.
 - **Telegram Alerts** — Sends candlestick chart PNGs with full trade breakdown: direction, entry/SL/TP, RSI, individual sentiment scores, and top news headlines.
-- **Resilient Scheduler** — APScheduler runs Mon–Fri 09:30–16:00 ET every 15 minutes. Per-ticker fault isolation ensures one failed ticker never stops the loop. Circuit breaker pauses the scraper and pings you after 3 consecutive failures.
+- **Resilient Scheduler** — APScheduler runs Mon–Fri 09:00–15:45 ET every 15 minutes. Per-ticker fault isolation ensures one failed ticker never stops the loop. Circuit breaker pauses the scraper and pings you after 3 consecutive failures.
 - **2-Hour Cooldown** — Prevents alert spam by enforcing a per-ticker cooldown after each alert.
 
 ## Signal Logic
@@ -134,7 +134,7 @@ The scheduler automatically refreshes `session/x_cookies.json` after each cycle 
 python run.py
 ```
 
-The scheduler will start and log to stdout. It only fires during US market hours (Mon–Fri 09:30–16:00 ET). You can test the Telegram connection at any time — alerts are dispatched whenever signals converge, regardless of whether the market is open during manual testing.
+The scheduler will start and log to stdout. It fires every 15 minutes Mon–Fri 09:00–15:45 ET. Outside those hours APScheduler waits silently — no CPU spin, no alerts.
 
 **Stop the bot:** `Ctrl+C`
 

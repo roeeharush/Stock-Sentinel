@@ -1,9 +1,5 @@
 """Stock Sentinel — entry point. Run with: python run.py"""
-import sys
+from stock_sentinel.scheduler import main
 
-try:
-    from stock_sentinel.scheduler import main
+if __name__ == "__main__":
     main()
-except KeyboardInterrupt:
-    print("\nStock Sentinel stopped.")
-    sys.exit(0)
