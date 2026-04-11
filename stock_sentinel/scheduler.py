@@ -1,0 +1,138 @@
+import asyncio
+import logging
+from datetime import datetime, timezone
+from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+from stock_sentinel import config
+from stock_sentinel.config import validate_secrets
+from stock_sentinel.models import TickerSnapshot, Alert
+from stock_sentinel.analyzer import fetch_ohlcv, compute_signals
+from stock_sentinel.scraper import init_browser, scrape_sentiment, close_browser, save_cookies
+from stock_sentinel.news_scraper import fetch_news_sentiment
+from stock_sentinel.signal_filter import combined_sentiment_score, should_alert, update_cooldown
+from stock_sentinel.notifier import generate_chart, send_alert
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
+
+
+async def _async_cycle(
+    tickers: list[str],
+    state: dict[str, TickerSnapshot],
+    page,
+) -> None:
+    """Run one monitoring cycle for all tickers. Page is injected for testability."""
+    consecutive_failures = 0
+
+    for ticker in tickers:
+        snap = state.setdefault(ticker, TickerSnapshot(ticker=ticker))
+        try:
+            # --- Data Acquisition ---
+            sentiment = await scrape_sentiment(ticker, page)
+            snap.sentiment = sentiment
+
+            if sentiment.failed:
+                consecutive_failures += 1
+                log.warning("%s: scrape failed (%d consecutive)", ticker, consecutive_failures)
+            else:
+                consecutive_failures = 0
+
+            if consecutive_failures >= config.SCRAPER_CIRCUIT_BREAKER_N:
+                log.error("Circuit breaker triggered — pausing scraper for this cycle")
+                cb_alert = Alert(
+                    ticker="SYSTEM",
+                    direction="LONG",
+                    entry=0.0,
+                    stop_loss=0.0,
+                    take_profit=0.0,
+                    rsi=0.0,
+                    sentiment_score=0.0,
+                )
+                await send_alert(
+                    cb_alert,
+                    [f"Circuit breaker triggered after {consecutive_failures} consecutive failures."],
+                    config.TELEGRAM_BOT_TOKEN,
+                    config.TELEGRAM_CHAT_ID,
+                )
+                break
+
+            snap.news_sentiment = fetch_news_sentiment(ticker)
+
+            try:
+                df = fetch_ohlcv(ticker)
+                snap.technical = compute_signals(ticker, df)
+            except ValueError as exc:
+                log.warning("%s: technical analysis skipped — %s", ticker, exc)
+                continue
+
+            # --- Filtering & Action ---
+            if not should_alert(snap):
+                continue
+
+            score = combined_sentiment_score(snap)
+            headlines = snap.news_sentiment.headlines if snap.news_sentiment else []
+            chart_path = generate_chart(ticker, df, snap.technical)
+
+            alert = Alert(
+                ticker=ticker,
+                direction=snap.technical.direction,
+                entry=snap.technical.entry,
+                stop_loss=snap.technical.stop_loss,
+                take_profit=snap.technical.take_profit,
+                rsi=snap.technical.rsi,
+                sentiment_score=score,
+                twitter_score=snap.sentiment.score if snap.sentiment else 0.0,
+                news_score=snap.news_sentiment.score if snap.news_sentiment else 0.0,
+                chart_path=chart_path,
+            )
+
+            success = await send_alert(
+                alert, headlines, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
+            )
+            if success:
+                state[ticker] = update_cooldown(snap)
+                log.info("Alert sent: %s %s", ticker, snap.technical.direction)
+
+        except Exception as exc:  # noqa: BLE001 — ticker-level isolation
+            log.error("%s: unexpected error in cycle — %s: %s", ticker, type(exc).__name__, exc)
+
+
+def run_cycle(state: dict[str, TickerSnapshot]) -> None:
+    """Synchronous entry point called by APScheduler."""
+    asyncio.run(_run_with_browser(state))
+
+
+async def _run_with_browser(state: dict[str, TickerSnapshot]) -> None:
+    """Manages browser lifecycle for a full cycle."""
+    pw, browser, page = await init_browser(config.X_COOKIES_PATH)
+    try:
+        await _async_cycle(config.WATCHLIST, state, page)
+    finally:
+        await save_cookies(page, config.X_COOKIES_PATH)
+        await close_browser(pw, browser)
+
+
+def main() -> None:
+    validate_secrets()
+    state: dict[str, TickerSnapshot] = {}
+    scheduler = BlockingScheduler(timezone="America/New_York")
+    scheduler.add_job(
+        run_cycle,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour="9-15",
+            minute="0,15,30,45",
+            timezone="America/New_York",
+        ),
+        args=[state],
+    )
+    log.info("Stock Sentinel started. Watching: %s", ", ".join(config.WATCHLIST))
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        log.info("Scheduler stopped.")
+
+
+if __name__ == "__main__":
+    main()
