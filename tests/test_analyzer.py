@@ -56,7 +56,7 @@ def test_compute_signals_short_sl_above_entry_tp_below():
 
 
 def test_compute_signals_sl_tp_multipliers():
-    """SL = entry ± 1.5*ATR, TP = entry ± 3.0*ATR (from config constants)."""
+    """SL = entry ± 2.0*ATR, TP1/2/3 via ATR multipliers (from config constants)."""
     df = _mock_df()
     df["RSI_14"] = 25.0
     df["SMA_20"] = df["Close"] * 0.95

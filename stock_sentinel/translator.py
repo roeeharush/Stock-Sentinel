@@ -41,6 +41,16 @@ TRADING_GLOSSARY: dict[str, str] = {
     "Price below EMA 200": "מחיר מתחת ל-EMA 200",
     # Confluence
     "Confluence": "גורמי התכנסות הטרייד",
+    # Horizon & New Indicators
+    "Bollinger Band Breakout": "פריצת רצועות בולינגר",
+    "Stochastic RSI Crossover": "חצייה של RSI סטוכסטי",
+    "ADX Strong Trend": "מגמה חזקה (ADX)",
+    "OBV Rising": "נפח מצטבר עולה (OBV)",
+    "Short-term": "טווח קצר",
+    "Long-term": "לטווח ארוך",
+    "TP1 Conservative": "יעד 1 (שמרני)",
+    "TP2 Moderate": "יעד 2 (מתון)",
+    "TP3 Ambitious": "יעד 3 (שאפתני)",
 }
 
 # Sort by length descending so multi-word terms (e.g. "Short Squeeze") match before

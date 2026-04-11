@@ -17,11 +17,16 @@ SENTIMENT_MIN_RSS_HEADLINES: int = 3
 COOLDOWN_MINUTES = 120
 RSI_OVERSOLD = 30.0
 RSI_OVERBOUGHT = 70.0
-ATR_SL_MULTIPLIER = 1.5
-ATR_TP_MULTIPLIER = 3.0
+ATR_SL_MULTIPLIER: float = 2.0    # updated: was 1.5 (wider stop for reliability)
+ATR_TP_MULTIPLIER: float = 3.0    # backward-compat alias = TP2
+ATR_TP1_MULTIPLIER: float = 1.5   # conservative target
+ATR_TP2_MULTIPLIER: float = 3.0   # moderate target
+ATR_TP3_MULTIPLIER: float = 5.0   # ambitious target
 SCRAPER_CIRCUIT_BREAKER_N = 3
 TECHNICAL_SCORE_MIN: int = 60        # minimum confluence score to trigger an alert
 VOLUME_SPIKE_MULTIPLIER: float = 2.0  # volume must exceed N× 20-period average
+ADX_TREND_MIN: float = 25.0   # minimum ADX for "strong trend"
+OBV_SLOPE_BARS: int = 5       # bars to measure OBV slope
 
 
 # --- Calibration weights (adjust based on validator findings) ---

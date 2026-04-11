@@ -49,6 +49,15 @@ class TechnicalSignal:
     macd_bullish: bool = False       # True when MACD line > Signal line
     technical_score: int = 0         # 0-100 confluence score
     confluence_factors: list[str] = field(default_factory=list)
+    # --- Task 13: Strategic Horizon ---
+    take_profit_1: float = 0.0   # conservative  (1.5 × ATR)
+    take_profit_3: float = 0.0   # ambitious     (5.0 × ATR)
+    bb_breakout: bool = False        # price broke Bollinger Band aligned with direction
+    stochrsi_crossover: bool = False # StochRSI K crossed above/below D
+    adx_strong: bool = False         # ADX > ADX_TREND_MIN
+    obv_rising: bool = False         # OBV positive slope over last N bars
+    horizon: str = ""                # "SHORT_TERM", "LONG_TERM", "BOTH", or ""
+    horizon_reason: str = ""         # Hebrew explanation sentence
 
 @dataclass
 class TickerSnapshot:
@@ -73,4 +82,8 @@ class Alert:
     rss_score: float = 0.0      # raw RSS component (40%)
     chart_path: str | None = None
     confluence_factors: list[str] = field(default_factory=list)
+    take_profit_1: float = 0.0
+    take_profit_3: float = 0.0
+    horizon: str = ""
+    horizon_reason: str = ""
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
