@@ -131,3 +131,35 @@ async def test_circuit_breaker_triggers_after_n_failures():
     call_args = mock_notify.call_args_list[0]
     alert_arg = call_args[0][0]
     assert alert_arg.ticker == "SYSTEM"
+
+
+@pytest.mark.asyncio
+async def test_async_cycle_unexpected_exception_continues():
+    """When generate_chart raises unexpectedly, the scheduler catches it and continues."""
+    from stock_sentinel.scheduler import _async_cycle
+
+    state = {}
+    mock_page = AsyncMock()
+
+    with (
+        patch("stock_sentinel.scheduler.scrape_sentiment",
+              new_callable=AsyncMock,
+              return_value=_make_sentiment("NVDA")),
+        patch("stock_sentinel.scheduler.fetch_news_sentiment",
+              return_value=_make_news("NVDA")),
+        patch("stock_sentinel.scheduler.fetch_ohlcv",
+              return_value=MagicMock()),
+        patch("stock_sentinel.scheduler.compute_signals",
+              return_value=_make_signal("NVDA")),
+        patch("stock_sentinel.scheduler.should_alert",
+              return_value=True),
+        patch("stock_sentinel.scheduler.generate_chart",
+              side_effect=RuntimeError("disk full")),
+        patch("stock_sentinel.scheduler.send_alert",
+              new_callable=AsyncMock) as mock_notify,
+    ):
+        # Must not raise
+        await _async_cycle(["NVDA", "AMZN"], state, mock_page)
+
+    # generate_chart raised, so no alert sent
+    mock_notify.assert_not_called()

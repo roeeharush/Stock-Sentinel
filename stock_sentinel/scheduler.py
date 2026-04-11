@@ -24,8 +24,12 @@ async def _async_cycle(
 ) -> None:
     """Run one monitoring cycle for all tickers. Page is injected for testability."""
     consecutive_failures = 0
+    circuit_open = False
 
     for ticker in tickers:
+        if circuit_open:
+            break
+
         snap = state.setdefault(ticker, TickerSnapshot(ticker=ticker))
         try:
             # --- Data Acquisition ---
@@ -35,27 +39,13 @@ async def _async_cycle(
             if sentiment.failed:
                 consecutive_failures += 1
                 log.warning("%s: scrape failed (%d consecutive)", ticker, consecutive_failures)
+                if consecutive_failures >= config.SCRAPER_CIRCUIT_BREAKER_N:
+                    circuit_open = True
             else:
                 consecutive_failures = 0
 
-            if consecutive_failures >= config.SCRAPER_CIRCUIT_BREAKER_N:
-                log.error("Circuit breaker triggered — pausing scraper for this cycle")
-                cb_alert = Alert(
-                    ticker="SYSTEM",
-                    direction="LONG",
-                    entry=0.0,
-                    stop_loss=0.0,
-                    take_profit=0.0,
-                    rsi=0.0,
-                    sentiment_score=0.0,
-                )
-                await send_alert(
-                    cb_alert,
-                    [f"Circuit breaker triggered after {consecutive_failures} consecutive failures."],
-                    config.TELEGRAM_BOT_TOKEN,
-                    config.TELEGRAM_CHAT_ID,
-                )
-                break
+            if circuit_open:
+                continue  # skip to next iteration, break happens at loop top
 
             snap.news_sentiment = fetch_news_sentiment(ticker)
 
@@ -97,6 +87,28 @@ async def _async_cycle(
         except Exception as exc:  # noqa: BLE001 — ticker-level isolation
             log.error("%s: unexpected error in cycle — %s: %s", ticker, type(exc).__name__, exc)
 
+    # Fire circuit breaker admin alert outside the per-ticker loop
+    if circuit_open:
+        log.error("Circuit breaker triggered — pausing scraper for this cycle")
+        cb_alert = Alert(
+            ticker="SYSTEM",
+            direction="LONG",
+            entry=0.0,
+            stop_loss=0.0,
+            take_profit=0.0,
+            rsi=0.0,
+            sentiment_score=0.0,
+        )
+        try:
+            await send_alert(
+                cb_alert,
+                [],
+                config.TELEGRAM_BOT_TOKEN,
+                config.TELEGRAM_CHAT_ID,
+            )
+        except Exception as exc:
+            log.error("Failed to send circuit breaker alert: %s", exc)
+
 
 def run_cycle(state: dict[str, TickerSnapshot]) -> None:
     """Synchronous entry point called by APScheduler."""
@@ -105,12 +117,15 @@ def run_cycle(state: dict[str, TickerSnapshot]) -> None:
 
 async def _run_with_browser(state: dict[str, TickerSnapshot]) -> None:
     """Manages browser lifecycle for a full cycle."""
-    pw, browser, page = await init_browser(config.X_COOKIES_PATH)
+    pw = browser = page = None
     try:
+        pw, browser, page = await init_browser(config.X_COOKIES_PATH)
         await _async_cycle(config.WATCHLIST, state, page)
     finally:
-        await save_cookies(page, config.X_COOKIES_PATH)
-        await close_browser(pw, browser)
+        if page is not None:
+            await save_cookies(page, config.X_COOKIES_PATH)
+        if pw is not None and browser is not None:
+            await close_browser(pw, browser)
 
 
 def main() -> None:
