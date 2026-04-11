@@ -41,6 +41,14 @@ class TechnicalSignal:
     take_profit: float
     direction: Literal["LONG", "SHORT", "NEUTRAL"]
     analyzed_at: datetime
+    # --- New fields (Task 11) ---
+    ema_200: float = 0.0
+    vwap: float = 0.0
+    volume_spike: bool = False
+    candlestick_pattern: str = ""   # "Bullish Engulfing", "Hammer", "Shooting Star", or ""
+    macd_bullish: bool = False       # True when MACD line > Signal line
+    technical_score: int = 0         # 0-100 confluence score
+    confluence_factors: list[str] = field(default_factory=list)
 
 @dataclass
 class TickerSnapshot:
@@ -64,4 +72,5 @@ class Alert:
     news_score: float = 0.0     # raw yfinance news component (40%)
     rss_score: float = 0.0      # raw RSS component (40%)
     chart_path: str | None = None
+    confluence_factors: list[str] = field(default_factory=list)
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

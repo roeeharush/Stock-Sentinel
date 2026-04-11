@@ -20,6 +20,8 @@ RSI_OVERBOUGHT = 70.0
 ATR_SL_MULTIPLIER = 1.5
 ATR_TP_MULTIPLIER = 3.0
 SCRAPER_CIRCUIT_BREAKER_N = 3
+TECHNICAL_SCORE_MIN: int = 60        # minimum confluence score to trigger an alert
+VOLUME_SPIKE_MULTIPLIER: float = 2.0  # volume must exceed N× 20-period average
 
 
 def validate_secrets() -> None:
