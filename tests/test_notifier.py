@@ -37,21 +37,27 @@ def _alert(headlines=None):
 
 def test_build_message_contains_required_fields():
     alert, headlines = _alert()
-    msg = build_message(alert, headlines)
-    for fragment in ["NVDA", "LONG", "810", "792", "846", "RSI", "0.54", "0.60", "0.50"]:
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert, headlines)
+    # ticker and numeric values must appear
+    for fragment in ["NVDA", "810", "792", "846", "RSI", "0.54", "0.60", "0.50"]:
         assert fragment in msg, f"Missing '{fragment}' in message"
+    # Hebrew direction words must appear
+    assert "קניה" in msg or "LONG" in msg
 
 
 def test_build_message_contains_headlines():
     alert, headlines = _alert(["NVDA surges higher", "Upgrade to buy"])
-    msg = build_message(alert, headlines)
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert, headlines)
     assert "NVDA surges higher" in msg
     assert "Upgrade to buy" in msg
 
 
 def test_build_message_no_headlines():
     alert, _ = _alert()
-    msg = build_message(alert, [])
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert, [])
     assert "NVDA" in msg
     assert "RSI" in msg
     assert "0.54" in msg
@@ -68,7 +74,8 @@ def test_generate_chart_creates_png():
 @pytest.mark.asyncio
 async def test_send_alert_returns_true_on_success():
     alert, headlines = _alert()
-    with patch("stock_sentinel.notifier.Bot") as MockBot:
+    with patch("stock_sentinel.notifier.Bot") as MockBot, \
+         patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
         mock_bot_instance = AsyncMock()
         MockBot.return_value = mock_bot_instance
         mock_bot_instance.send_message = AsyncMock(return_value=MagicMock())
@@ -82,7 +89,8 @@ async def test_send_alert_returns_false_on_failure():
     from telegram.error import TelegramError
     alert, headlines = _alert()
     with patch("stock_sentinel.notifier.Bot") as MockBot, \
-         patch("stock_sentinel.notifier.asyncio.sleep", new_callable=AsyncMock):
+         patch("stock_sentinel.notifier.asyncio.sleep", new_callable=AsyncMock), \
+         patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
         mock_bot_instance = AsyncMock()
         MockBot.return_value = mock_bot_instance
         mock_bot_instance.send_message = AsyncMock(side_effect=TelegramError("fail"))

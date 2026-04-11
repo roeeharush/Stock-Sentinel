@@ -9,29 +9,41 @@ from datetime import datetime, timezone
 from telegram import Bot
 from telegram.error import TelegramError
 from stock_sentinel.models import Alert, TechnicalSignal
+from stock_sentinel.translator import translate_to_hebrew
 
 
 def build_message(alert: Alert, headlines: list[str]) -> str:
-    """Build Telegram message with technical data, sentiment breakdown, and headlines."""
+    """Build Hebrew professional Telegram alert with emojis and RTL formatting."""
+    direction_emoji = "📈" if alert.direction == "LONG" else "📉"
+    direction_heb = "קניה (LONG)" if alert.direction == "LONG" else "מכירה (SHORT)"
+
     lines = [
-        f"📊 *Stock Sentinel — {alert.ticker}* | {alert.direction}",
+        f"📊 *דוח מסחר — {alert.ticker}*",
+        f"{direction_emoji} כיוון: *{direction_heb}*",
         "",
-        "*Technical*",
-        f"  Entry:       ${alert.entry:.2f}",
-        f"  Stop Loss:   ${alert.stop_loss:.2f}",
-        f"  Take Profit: ${alert.take_profit:.2f}",
-        f"  RSI:         {alert.rsi:.1f}",
+        "💰 *נתונים טכניים*",
+        f"  כניסה:     `${alert.entry:.2f}`",
+        f"  סטופ לוס:  `${alert.stop_loss:.2f}`",
+        f"  יעד רווח:  `${alert.take_profit:.2f}`",
+        f"  RSI:       `{alert.rsi:.1f}`",
         "",
-        "*Sentiment* (60% news / 40% twitter)",
-        f"  Combined:  {alert.sentiment_score:+.2f}",
-        f"  Twitter:   {alert.twitter_score:+.2f}",
-        f"  News:      {alert.news_score:+.2f}",
+        "🧠 *תחושת שוק* (RSS 40% | חדשות 40% | סושיאל 20%)",
+        f"  ציון משולב: `{alert.sentiment_score:+.2f}`",
+        f"  RSS:        `{alert.news_score:+.2f}`",
+        f"  חדשות:      `{alert.news_score:+.2f}`",
+        f"  סושיאל:     `{alert.twitter_score:+.2f}`",
     ]
+
     if headlines:
-        lines += ["", "*Top Headlines*"]
+        lines += ["", "📰 *כותרות מובילות*"]
         for h in headlines[:5]:
-            lines.append(f"  • {h}")
-    lines += ["", f"_{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC_"]
+            translated = translate_to_hebrew(h)
+            lines.append(f"  • {translated}")
+
+    lines += [
+        "",
+        f"⏰ _{datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC_",
+    ]
     return "\n".join(lines)
 
 
