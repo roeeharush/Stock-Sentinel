@@ -13,19 +13,34 @@ from stock_sentinel.translator import translate_to_hebrew
 
 
 def build_message(alert: Alert, headlines: list[str]) -> str:
-    """Build Hebrew professional Telegram alert with emojis and RTL formatting."""
+    """Build Hebrew professional Telegram alert — RTL optimised."""
     direction_emoji = "📈" if alert.direction == "LONG" else "📉"
     direction_heb = "קניה (LONG)" if alert.direction == "LONG" else "מכירה (SHORT)"
 
+    # --- Horizon label ---
+    horizon_map = {
+        "SHORT_TERM": "📅 טווח קצר (2-14 יום)",
+        "LONG_TERM":  "📆 לטווח ארוך (שבועות/חודשים)",
+        "BOTH":       "📅📆 קצר וארוך כאחד",
+    }
+    horizon_line = horizon_map.get(alert.horizon, "")
+
     lines = [
-        f"📊 *דוח מסחר — {alert.ticker}*",
+        f"🎯 *איתות למסחר — {alert.ticker}*",
         f"{direction_emoji} כיוון: *{direction_heb}*",
+    ]
+    if horizon_line:
+        lines.append(f"⏳ תקופת זמן לטרייד: {horizon_line}")
+
+    lines += [
         "",
         "💰 *נתונים טכניים*",
-        f"  נקודת כניסה: `${alert.entry:.2f}`",
-        f"  סטופ לוס:  `${alert.stop_loss:.2f}`",
-        f"  יעד רווח:  `${alert.take_profit:.2f}`",
-        f"  RSI:       `{alert.rsi:.1f}`",
+        f"  נקודת כניסה:        `${alert.entry:.2f}`",
+        f"  🛡 סטופ לוס:         `${alert.stop_loss:.2f}`",
+        f"  🎯 יעד 1 (שמרני):   `${alert.take_profit_1:.2f}`",
+        f"  🎯 יעד 2 (מתון):    `${alert.take_profit:.2f}`",
+        f"  🏆 יעד 3 (שאפתני): `${alert.take_profit_3:.2f}`",
+        f"  RSI:                 `{alert.rsi:.1f}`",
         "",
         "🧠 *תחושת שוק* (RSS 40% | חדשות 40% | סושיאל 20%)",
         f"  ציון משולב: `{alert.sentiment_score:+.2f}`",
@@ -35,7 +50,7 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
     ]
 
     if headlines:
-        lines += ["", "📰 *כותרות מרכזיות (מאומתות)*"]
+        lines += ["", "📢 *חדשות מאומתות*"]
         for h in headlines[:5]:
             translated = translate_to_hebrew(h)
             lines.append(f"  • {translated}")
@@ -45,6 +60,9 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
         for f in alert.confluence_factors:
             translated = translate_to_hebrew(f)
             lines.append(f"  ✅ {translated}")
+
+    if alert.horizon_reason:
+        lines += ["", "💡 *הסבר האסטרטגיה*", f"  {alert.horizon_reason}"]
 
     lines += [
         "",
@@ -117,7 +135,7 @@ def build_daily_report(stats: dict) -> str:
         return "📊 *דוח יומי — Stock Sentinel*\n\nלא נשלחו התראות היום."
 
     lines = [
-        "📊 *דוח ביצועים יומי — Stock Sentinel*",
+        "📊 *דו\"ח ביצועים יומי — Stock Sentinel*",
         "",
         f"  סה\"כ עסקאות: `{total}`",
         f"  ✅ הצלחות:   `{wins}`",

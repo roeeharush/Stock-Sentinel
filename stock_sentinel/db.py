@@ -26,15 +26,30 @@ def init_db() -> None:
                 entry_price REAL NOT NULL,
                 stop_loss REAL NOT NULL,
                 take_profit REAL NOT NULL,
+                take_profit_1 REAL DEFAULT NULL,
+                take_profit_2 REAL DEFAULT NULL,
+                take_profit_3 REAL DEFAULT NULL,
                 rsi REAL NOT NULL,
                 technical_score INTEGER NOT NULL DEFAULT 0,
                 sentiment_score REAL NOT NULL DEFAULT 0.0,
                 confluence_factors TEXT NOT NULL DEFAULT '[]',
+                horizon TEXT DEFAULT '',
                 alerted_at TEXT NOT NULL,
                 outcome TEXT DEFAULT NULL,
                 validated_at TEXT DEFAULT NULL
             )
         """)
+        # --- forward-compatible migrations ---
+        for col, typedef in [
+            ("take_profit_1", "REAL DEFAULT NULL"),
+            ("take_profit_2", "REAL DEFAULT NULL"),
+            ("take_profit_3", "REAL DEFAULT NULL"),
+            ("horizon",       "TEXT DEFAULT ''"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} {typedef}")
+            except Exception:
+                pass  # column already exists
 
 
 def log_alert(alert: Alert, technical_score: int = 0) -> int:
@@ -42,19 +57,25 @@ def log_alert(alert: Alert, technical_score: int = 0) -> int:
     with _connect() as conn:
         cur = conn.execute(
             """INSERT INTO alerts
-               (ticker, direction, entry_price, stop_loss, take_profit, rsi,
-                technical_score, sentiment_score, confluence_factors, alerted_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (ticker, direction, entry_price, stop_loss, take_profit,
+                take_profit_1, take_profit_2, take_profit_3,
+                rsi, technical_score, sentiment_score,
+                confluence_factors, horizon, alerted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 alert.ticker,
                 alert.direction,
                 alert.entry,
                 alert.stop_loss,
-                alert.take_profit,
+                alert.take_profit,          # TP2
+                alert.take_profit_1,
+                alert.take_profit,          # TP2 stored in both take_profit and take_profit_2
+                alert.take_profit_3,
                 alert.rsi,
                 technical_score,
                 alert.sentiment_score,
                 json.dumps(alert.confluence_factors),
+                alert.horizon,
                 alert.generated_at.isoformat(),
             ),
         )

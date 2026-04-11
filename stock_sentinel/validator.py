@@ -58,15 +58,17 @@ def _resolve_alert(alert: dict, df: pd.DataFrame) -> str | None:
         high = float(row["High"])
         low = float(row["Low"])
 
+        tp1 = alert.get("take_profit_1") or tp  # fall back to TP2 if not stored
+
         if direction == "LONG":
             if low <= sl:
                 return "LOSS"
-            if high >= tp:
+            if high >= tp1:
                 return "WIN"
         else:  # SHORT
             if high >= sl:
                 return "LOSS"
-            if low <= tp:
+            if low <= tp1:
                 return "WIN"
 
     # No bar resolved it yet

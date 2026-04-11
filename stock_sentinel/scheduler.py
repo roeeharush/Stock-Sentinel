@@ -74,12 +74,16 @@ async def _async_cycle(
                 entry=snap.technical.entry,
                 stop_loss=snap.technical.stop_loss,
                 take_profit=snap.technical.take_profit,
+                take_profit_1=snap.technical.take_profit_1,
+                take_profit_3=snap.technical.take_profit_3,
                 rsi=snap.technical.rsi,
                 sentiment_score=score,
                 twitter_score=snap.sentiment.score if snap.sentiment else 0.0,
                 news_score=snap.news_sentiment.score if snap.news_sentiment else 0.0,
                 rss_score=snap.rss_sentiment.score if snap.rss_sentiment else 0.0,
                 confluence_factors=snap.technical.confluence_factors,
+                horizon=snap.technical.horizon,
+                horizon_reason=snap.technical.horizon_reason,
                 chart_path=chart_path,
             )
 

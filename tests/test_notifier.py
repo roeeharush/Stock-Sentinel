@@ -118,6 +118,23 @@ def test_build_daily_report_with_stats():
     assert "Volume Spike" in msg
 
 
+def test_build_message_horizon_section():
+    alert, headlines = _alert()
+    alert_with_horizon = Alert(
+        ticker="NVDA", direction="LONG", entry=810.0,
+        stop_loss=792.0, take_profit=846.0, rsi=27.0,
+        sentiment_score=0.54, twitter_score=0.6, news_score=0.5,
+        chart_path=None,
+        horizon="SHORT_TERM",
+        horizon_reason="המניה מציגה פריצת ווליום — אות מומנטום לטווח קצר.",
+    )
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert_with_horizon, [])
+    assert "טווח קצר" in msg
+    assert "הסבר האסטרטגיה" in msg
+    assert "פריצת ווליום" in msg
+
+
 @pytest.mark.asyncio
 async def test_send_daily_report_success():
     stats = {"total": 3, "wins": 2, "losses": 1, "win_rate": 2/3, "top_factors": []}
