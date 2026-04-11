@@ -20,7 +20,12 @@ def _score_headlines(headlines: list[str]) -> float:
 def fetch_news_sentiment(ticker: str, max_headlines: int = 10) -> NewsSentimentResult:
     try:
         news = yf.Ticker(ticker).news or []
-        headlines = [item["title"] for item in news[:max_headlines] if "title" in item]
+        # yfinance 1.x nests title at item["content"]["title"]; 0.x had item["title"]
+        headlines = []
+        for item in news[:max_headlines]:
+            title = (item.get("content") or {}).get("title") or item.get("title")
+            if title:
+                headlines.append(title)
         return NewsSentimentResult(
             ticker=ticker,
             headlines=headlines,
