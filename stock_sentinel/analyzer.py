@@ -20,6 +20,8 @@ from stock_sentinel.config import (
     SCORE_WEIGHT_MACD,
     ADX_TREND_MIN,
     OBV_SLOPE_BARS,
+    RR_MIN,
+    ATR_PCT_HIGH_THRESHOLD,
 )
 
 
@@ -137,13 +139,16 @@ def _classify_horizon(
     ema_200_above: bool,
     adx_strong: bool,
     obv_rising: bool,
+    ema_21_break: bool = False,
+    atr_pct_high: bool = False,
 ) -> str:
     """Return trade horizon: 'SHORT_TERM', 'LONG_TERM', 'BOTH', or ''.
 
-    SHORT_TERM: any momentum signal present.
-    LONG_TERM:  all three trend conditions met.
+    SHORT_TERM (2-10 days): any momentum signal present, including
+        EMA 21 break (Task 17.2) or high ATR% volatility.
+    LONG_TERM (3-8 weeks): price > EMA200 + Golden Cross (SMA50>EMA200) + positive OBV.
     """
-    short = volume_spike or bb_breakout or stochrsi_crossover
+    short = volume_spike or bb_breakout or stochrsi_crossover or ema_21_break or atr_pct_high
     long = ema_200_above and adx_strong and obv_rising
     if short and long:
         return "BOTH"
@@ -162,6 +167,8 @@ def _build_horizon_reason(
     ema_200_above: bool,
     adx_strong: bool,
     obv_rising: bool,
+    ema_21_break: bool = False,
+    atr_pct_high: bool = False,
 ) -> str:
     """Generate a Hebrew explanation sentence for the trade horizon."""
     if not horizon:
@@ -174,6 +181,10 @@ def _build_horizon_reason(
         short_parts.append("פריצת רצועות בולינגר")
     if stochrsi_crossover:
         short_parts.append("חצייה של RSI סטוכסטי")
+    if ema_21_break:
+        short_parts.append("פריצת EMA 21")
+    if atr_pct_high:
+        short_parts.append("תנודתיות גבוהה (ATR%)")
 
     long_parts = []
     if ema_200_above:
@@ -185,14 +196,14 @@ def _build_horizon_reason(
 
     if horizon == "SHORT_TERM" and short_parts:
         signals = " ו-".join(short_parts)
-        return f"המניה מציגה {signals} — אות מומנטום לטווח קצר (2-14 יום)."
+        return f"המניה מציגה {signals} — אות מומנטום לטווח קצר (2-10 ימי מסחר)."
     if horizon == "LONG_TERM" and long_parts:
         signals = " ו-".join(long_parts)
-        return f"המניה מציגה {signals} — אות מגמה לטווח ארוך (שבועות/חודשים)."
+        return f"המניה מציגה {signals} — אות מגמה לטווח ארוך (3-8 שבועות)."
     if horizon == "BOTH":
         short_str = " ו-".join(short_parts) if short_parts else "אותות מומנטום"
         long_str = " ו-".join(long_parts) if long_parts else "אותות מגמה"
-        return f"אות כפול: {short_str} בתמיכת {long_str} — הזדמנות לטווח קצר וארוך כאחד."
+        return f"אות כפול: {short_str} בתמיכת {long_str} — הזדמנות לטווח קצר (2-10 ימים) וארוך (3-8 שבועות) כאחד."
     return ""
 
 
@@ -329,6 +340,10 @@ def compute_signals(ticker: str, df: pd.DataFrame) -> TechnicalSignal:
     if "OBV" not in df.columns:
         df.ta.obv(append=True)
 
+    # ── EMA 21 (short-term momentum line) ─────────────────────────────────────
+    if "EMA_21" not in df.columns:
+        df.ta.ema(length=21, append=True)
+
     # ── Rolling VWAP (20-day) ──────────────────────────────────────────────────
     if "VWAP_20" not in df.columns:
         typical = (df["High"] + df["Low"] + df["Close"]) / 3
@@ -347,6 +362,8 @@ def compute_signals(ticker: str, df: pd.DataFrame) -> TechnicalSignal:
     atr    = _safe_get(latest.get("ATRr_14"),  close * 0.01)
     ema_200 = _safe_get(latest.get("EMA_200"), 0.0)
     vwap   = _safe_get(latest.get("VWAP_20"), close)
+
+    ema_21 = _safe_get(latest.get("EMA_21"), close)
 
     macd_val = _safe_get(latest.get("MACD_12_26_9"),  0.0)
     macd_sig = _safe_get(latest.get("MACDs_12_26_9"), 0.0)
@@ -438,6 +455,19 @@ def compute_signals(ticker: str, df: pd.DataFrame) -> TechnicalSignal:
         take_profit   = close + ATR_TP2_MULTIPLIER * atr
         take_profit_3 = close + ATR_TP3_MULTIPLIER * atr
 
+    # ── EMA 21 break (price crossed through EMA21 aligned with direction) ───────
+    ema_21_break = False
+    if ema_21 > 0 and len(df) >= 2:
+        prev_close = float(df["Close"].iloc[-2])
+        if direction == "LONG":
+            ema_21_break = prev_close <= ema_21 < close   # crossed above
+        elif direction == "SHORT":
+            ema_21_break = prev_close >= ema_21 > close   # crossed below
+
+    # ── ATR as percentage of close ─────────────────────────────────────────────
+    atr_pct = (atr / close * 100.0) if close > 0 else 0.0
+    atr_pct_high = atr_pct >= ATR_PCT_HIGH_THRESHOLD
+
     # ── Candlestick pattern + TechnicalScore ───────────────────────────────────
     pattern = _detect_candlestick_pattern(df)
     technical_score, confluence_factors = _compute_technical_score(
@@ -448,11 +478,22 @@ def compute_signals(ticker: str, df: pd.DataFrame) -> TechnicalSignal:
     horizon = _classify_horizon(
         direction, volume_spike, bb_breakout, stochrsi_crossover,
         ema_200_above, adx_strong, obv_rising,
+        ema_21_break=ema_21_break,
+        atr_pct_high=atr_pct_high,
     )
     horizon_reason = _build_horizon_reason(
         horizon, volume_spike, bb_breakout, stochrsi_crossover,
         ema_200_above, adx_strong, obv_rising,
+        ema_21_break=ema_21_break,
+        atr_pct_high=atr_pct_high,
     )
+
+    # ── Task 17.2: Risk/Reward ratio ───────────────────────────────────────────
+    # RR = (TP1 - entry) / (entry - SL)  for LONG
+    #     (entry - TP1) / (SL - entry)  for SHORT
+    risk  = abs(close - stop_loss)
+    rward = abs(take_profit_1 - close)
+    risk_reward = round(rward / risk, 2) if risk > 0 else 0.0
 
     # ── Task 16: Expert Tier indicators ────────────────────────────────────────
     pivot_r1, pivot_r2, pivot_s1, pivot_s2 = _compute_pivot_points(df)
@@ -504,4 +545,8 @@ def compute_signals(ticker: str, df: pd.DataFrame) -> TechnicalSignal:
         golden_cross=golden_cross,
         fib_618=fib_618,
         fib_65=fib_65,
+        ema_21=ema_21,
+        ema_21_break=ema_21_break,
+        atr_pct=atr_pct,
+        risk_reward=risk_reward,
     )

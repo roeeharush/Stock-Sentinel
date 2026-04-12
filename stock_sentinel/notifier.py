@@ -110,6 +110,62 @@ def _build_analyst_summary(alert: Alert) -> str:
 # Public: build_message
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _build_ma_ribbon_summary(alert: Alert) -> str:
+    """Compose a detailed Hebrew analyst paragraph covering MA Ribbon, Fibonacci, and Volume Profile."""
+    parts: list[str] = []
+
+    # ── MA Ribbon ────────────────────────────────────────────────────────────
+    if alert.golden_cross:
+        parts.append(
+            "ממוצע 50 חצה מעל ממוצע 200 (Golden Cross) — ה-MA Ribbon מאשר מגמה עולה ארוכת טווח"
+        )
+    elif alert.ema_21 and alert.entry:
+        rel = "מעל" if alert.entry > alert.ema_21 else "מתחת ל"
+        parts.append(
+            f"המחיר נמצא {rel} EMA 21 (${alert.ema_21:.2f})"
+            + (" — סימן לאיבוד המומנטום הקצר" if alert.entry < alert.ema_21 else " — מומנטום קצר-טווח בריא")
+        )
+
+    # ── Fibonacci Golden Pocket ───────────────────────────────────────────────
+    if alert.fib_618 and alert.entry:
+        dist_pct = abs(alert.fib_618 - alert.entry) / alert.entry * 100
+        if dist_pct < 5.0:
+            role = "תמיכה" if alert.direction == "LONG" else "התנגדות"
+            parts.append(
+                f"רמת פיבונאצ'י 0.618 (${alert.fib_618:.2f}) מספקת {role} — הכיס הזהב מאמת את נקודת הכניסה"
+            )
+
+    # ── Volume Profile / POC ──────────────────────────────────────────────────
+    if alert.poc_price and alert.entry:
+        dist_pct = abs(alert.poc_price - alert.entry) / alert.entry * 100
+        if dist_pct < 4.0:
+            parts.append(
+                f"ה-POC (${alert.poc_price:.2f}) צמוד לכניסה — ריכוז נפח מסחר מוסדי משמעותי באזור זה"
+            )
+
+    # ── VWAP ─────────────────────────────────────────────────────────────────
+    if alert.vwap and alert.entry:
+        if alert.direction == "LONG" and alert.vwap <= alert.entry * 1.02:
+            parts.append(f"VWAP (${alert.vwap:.2f}) תומך במחיר מלמטה — זרם מוסדי קנייתי")
+        elif alert.direction == "SHORT" and alert.vwap >= alert.entry * 0.98:
+            parts.append(f"VWAP (${alert.vwap:.2f}) מהווה התנגדות — לחץ מוסדי כלפי מטה")
+
+    # ── RSI Divergence ────────────────────────────────────────────────────────
+    if alert.rsi_divergence == "bullish":
+        parts.append("דיברגנס שורי ב-RSI מאשר היחלשות המוכרים — מומנטום הפוך צפוי")
+    elif alert.rsi_divergence == "bearish":
+        parts.append("דיברגנס דובי ב-RSI מאשר היחלשות הקונים — מומנטום הפוך כלפי מטה")
+
+    # ── Risk/Reward ───────────────────────────────────────────────────────────
+    if alert.risk_reward and alert.risk_reward >= 1.5:
+        parts.append(f"יחס סיכון/תגמול: {alert.risk_reward:.1f} — עסקה כדאית לביצוע")
+
+    if not parts:
+        return alert.horizon_reason or "האיתות מבוסס על מספר גורמי התכנסות טכניים."
+
+    return ". ".join(parts) + "."
+
+
 def build_message(alert: Alert, headlines: list[str]) -> str:
     """Build the Expert-Tier Hebrew Telegram alert message (RTL-optimised)."""
     direction_emoji = "📈" if alert.direction == "LONG" else "📉"
@@ -124,8 +180,14 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
     tp1_price = alert.take_profit_1 if alert.take_profit_1 else alert.take_profit
     tp3_price = alert.take_profit_3 if alert.take_profit_3 else alert.take_profit
 
+    # ── Header: scanner hit vs watchlist ─────────────────────────────────────
+    if getattr(alert, "scanner_hit", False):
+        header = f"🔍 *מנייה חמה התגלתה בסריקה — {alert.ticker}*"
+    else:
+        header = f"🎯 *איתות למסחר — {alert.ticker}*"
+
     lines = [
-        f"🎯 *איתות למסחר — {alert.ticker}*",
+        header,
         f"{direction_emoji} כיוון: *{direction_heb}*",
     ]
 
@@ -137,10 +199,11 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
         s_lbl = _score_label(alert.institutional_score)
         lines.append(f"📊 ציון איכות כולל: `{alert.institutional_score:.1f}/10` ({s_lbl})")
 
+    rr_str = f"  | יחס ס/ת: `{alert.risk_reward:.1f}`" if alert.risk_reward else ""
     lines += [
         "",
         "💰 *יעדים ורווח פוטנציאלי:*",
-        f"  • כניסה:          `${alert.entry:.2f}`",
+        f"  • כניסה:          `${alert.entry:.2f}`{rr_str}",
         f"  • 🛡 סטופ לוס:    `${alert.stop_loss:.2f}` (`{pct_sl:+.1f}%`)",
         f"  • 🎯 יעד 1:       `${tp1_price:.2f}` (`{pct_tp1:+.1f}%`)",
         f"  • 🚀 יעד 2:       `${alert.take_profit:.2f}` (`{pct_tp2:+.1f}%`)",
@@ -182,10 +245,10 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
         for f in alert.confluence_factors:
             lines.append(f"  ✅ {translate_to_hebrew(f)}")
 
-    # Analyst summary
-    summary = _build_analyst_summary(alert)
+    # Analyst summary (MA Ribbon + Fibonacci + Volume Profile)
+    summary = _build_ma_ribbon_summary(alert)
     if summary:
-        lines += ["", "💡 *ניתוח אנליסט (אסטרטגיה):*", f"  {summary}"]
+        lines += ["", "💡 *סיכום אנליסט:*", f"  {summary}"]
 
     lines += [
         "",

@@ -236,7 +236,7 @@ def test_classify_horizon_none():
 def test_build_horizon_reason_short_term():
     reason = _build_horizon_reason("SHORT_TERM", True, False, False, False, False, False)
     assert "פריצת ווליום" in reason
-    assert "2-14" in reason
+    assert "2-10" in reason
 
 
 def test_build_horizon_reason_long_term():
@@ -394,3 +394,108 @@ def test_golden_cross_detected():
     # golden_cross checks ma_50 (computed SMA50) vs ema_200 (computed EMA200)
     # When pre-injected, the assertion must hold on the injected values
     assert result.golden_cross == (result.ma_50 > 0 and result.ema_200 > 0 and result.ma_50 > result.ema_200)
+
+
+# ── Task 17.2: Hunter Engine tests ────────────────────────────────────────────
+
+def test_compute_signals_ema21_present():
+    """EMA 21 is computed and stored in TechnicalSignal."""
+    result = compute_signals("NVDA", _mock_df())
+    assert isinstance(result.ema_21, float)
+    assert result.ema_21 > 0
+
+
+def test_compute_signals_atr_pct_present():
+    """atr_pct is computed as ATR / Close * 100."""
+    result = compute_signals("NVDA", _mock_df())
+    assert isinstance(result.atr_pct, float)
+    expected = result.atr / result.entry * 100.0 if result.entry else 0.0
+    assert abs(result.atr_pct - expected) < 0.01
+
+
+def test_compute_signals_risk_reward_positive_for_long():
+    """For a LONG signal, risk_reward = (TP1 - entry) / (entry - SL) must be > 0."""
+    df = _mock_df()
+    df["RSI_14"] = 25.0
+    df["SMA_20"] = df["Close"] * 0.95
+    result = compute_signals("NVDA", df)
+    assert result.direction == "LONG"
+    assert result.risk_reward > 0
+    expected_rr = abs(result.take_profit_1 - result.entry) / abs(result.entry - result.stop_loss)
+    assert abs(result.risk_reward - round(expected_rr, 2)) < 0.01
+
+
+def test_compute_signals_risk_reward_positive_for_short():
+    """For a SHORT signal, risk_reward must also be > 0."""
+    df = _mock_df()
+    df["RSI_14"] = 75.0
+    df["SMA_20"] = df["Close"] * 1.05
+    result = compute_signals("NVDA", df)
+    assert result.direction == "SHORT"
+    assert result.risk_reward > 0
+
+
+def test_classify_horizon_short_term_ema21_break():
+    """EMA 21 break alone triggers SHORT_TERM horizon."""
+    assert _classify_horizon(
+        "LONG", False, False, False, False, False, False,
+        ema_21_break=True, atr_pct_high=False
+    ) == "SHORT_TERM"
+
+
+def test_classify_horizon_short_term_atr_pct():
+    """High ATR% alone triggers SHORT_TERM horizon."""
+    assert _classify_horizon(
+        "LONG", False, False, False, False, False, False,
+        ema_21_break=False, atr_pct_high=True
+    ) == "SHORT_TERM"
+
+
+def test_classify_horizon_long_term_no_short_signals():
+    """LONG_TERM requires ema_200_above + adx_strong + obv_rising with no short signals."""
+    assert _classify_horizon(
+        "LONG", False, False, False, True, True, True,
+        ema_21_break=False, atr_pct_high=False
+    ) == "LONG_TERM"
+
+
+def test_classify_horizon_both_ema21_plus_long():
+    """EMA 21 break + all long-term conditions → BOTH."""
+    assert _classify_horizon(
+        "LONG", False, False, False, True, True, True,
+        ema_21_break=True, atr_pct_high=False
+    ) == "BOTH"
+
+
+def test_build_horizon_reason_includes_ema21():
+    """Horizon reason mentions EMA 21 when ema_21_break=True."""
+    reason = _build_horizon_reason(
+        "SHORT_TERM", False, False, False, False, False, False,
+        ema_21_break=True, atr_pct_high=False
+    )
+    assert "EMA 21" in reason
+    assert "2-10" in reason
+
+
+def test_build_horizon_reason_long_term_updated_period():
+    """Long-term horizon reason uses '3-8 שבועות' label."""
+    reason = _build_horizon_reason(
+        "LONG_TERM", False, False, False, True, True, True,
+        ema_21_break=False, atr_pct_high=False
+    )
+    assert "3-8" in reason
+
+
+def test_compute_signals_ema21_break_field():
+    """ema_21_break is a bool in TechnicalSignal."""
+    result = compute_signals("NVDA", _mock_df())
+    assert isinstance(result.ema_21_break, bool)
+
+
+def test_compute_signals_hunter_fields_complete():
+    """All Task 17.2 TechnicalSignal fields are present and typed correctly."""
+    result = compute_signals("NVDA", _mock_df())
+    assert isinstance(result.ema_21, float)
+    assert isinstance(result.ema_21_break, bool)
+    assert isinstance(result.atr_pct, float) and result.atr_pct >= 0
+    assert isinstance(result.risk_reward, float) and result.risk_reward >= 0

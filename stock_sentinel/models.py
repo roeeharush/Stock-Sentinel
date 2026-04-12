@@ -68,6 +68,23 @@ class TechnicalSignal:
     golden_cross: bool = False       # SMA50 > EMA200 (current state)
     fib_618: float = 0.0             # Fibonacci 61.8% retracement level
     fib_65: float = 0.0              # Fibonacci 65.0% retracement level
+    # --- Task 17.2: Hunter Engine ---
+    ema_21: float = 0.0              # EMA 21 (short-term momentum line)
+    ema_21_break: bool = False       # price crossed above/below EMA 21 aligned with direction
+    atr_pct: float = 0.0             # ATR as % of close price
+    risk_reward: float = 0.0         # (TP1 - entry) / (entry - SL), pre-computed
+
+@dataclass
+class ScannerCandidate:
+    """A ticker surfaced by the autonomous market scanner."""
+    ticker: str
+    price: float
+    change_pct: float        # % change on the day
+    volume: int              # today's share volume
+    market_cap: float        # approximate market cap in USD
+    reason: str = ""         # "gainer" | "volume" | "52w_high"
+    discovered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
 
 @dataclass
 class TickerSnapshot:
@@ -112,3 +129,7 @@ class Alert:
     pivot_r2: float = 0.0
     pivot_s1: float = 0.0
     pivot_s2: float = 0.0
+    # --- Task 17.2: Scanner ---
+    scanner_hit: bool = False        # True when alert originated from market scanner
+    risk_reward: float = 0.0         # (TP1 - entry) / (entry - SL)
+    ema_21: float = 0.0              # EMA 21 value at signal time

@@ -16,6 +16,12 @@ from stock_sentinel.notifier import generate_chart, send_alert, send_daily_repor
 from stock_sentinel.db import init_db, log_alert, get_daily_stats
 from stock_sentinel.monitor import check_active_trades
 from stock_sentinel.validator import validate_daily
+from stock_sentinel.scanner import (
+    ScannerCooldownTracker,
+    fetch_market_movers,
+    filter_candidates,
+)
+from stock_sentinel.signal_filter import combined_sentiment_score as _css
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -206,10 +212,115 @@ def run_monitor() -> None:
         log.error("Monitor run failed: %s", exc)
 
 
+async def _async_scanner_cycle(scanner_state: ScannerCooldownTracker) -> None:
+    """Fetch market movers, filter them, run full analysis, send alerts for qualified hits."""
+    candidates = await fetch_market_movers()
+    qualified  = filter_candidates(candidates, scanner_state)
+
+    for cand in qualified:
+        ticker = cand.ticker
+        try:
+            df = fetch_ohlcv(ticker)
+            signal = compute_signals(ticker, df)
+
+            if signal.direction == "NEUTRAL":
+                continue
+
+            # R/R gate: skip if below minimum risk/reward
+            if signal.risk_reward > 0 and signal.risk_reward < config.RR_MIN:
+                log.debug("Scanner skip %s: RR %.2f < %.2f", ticker, signal.risk_reward, config.RR_MIN)
+                continue
+
+            # Sentiment: use news + RSS only (no browser required for scanner)
+            from stock_sentinel.news_scraper import fetch_news_sentiment
+            from stock_sentinel.rss_provider import fetch_rss_sentiment
+            from stock_sentinel.models import TickerSnapshot
+            snap = TickerSnapshot(ticker=ticker)
+            snap.technical      = signal
+            snap.news_sentiment = fetch_news_sentiment(ticker)
+            snap.rss_sentiment  = fetch_rss_sentiment(ticker)
+
+            score    = _css(snap)
+            headlines = snap.news_sentiment.headlines if snap.news_sentiment else []
+
+            # Direction + sentiment agreement
+            if signal.direction == "LONG" and score <= 0:
+                continue
+            if signal.direction == "SHORT" and score >= 0:
+                continue
+
+            chart_path = generate_chart(ticker, df, signal)
+
+            t     = signal
+            entry = t.entry
+
+            def _pct(price: float) -> float:
+                return round((price - entry) / entry * 100.0, 1) if entry else 0.0
+
+            ts_component   = t.technical_score * 7.0 / 100.0
+            ss_component   = (score + 1.0) * 1.5
+            inst_score     = round(min(max(ts_component + ss_component, 1.0), 10.0), 1)
+
+            alert = Alert(
+                ticker=ticker,
+                direction=t.direction,
+                entry=entry,
+                stop_loss=t.stop_loss,
+                take_profit=t.take_profit,
+                take_profit_1=t.take_profit_1,
+                take_profit_3=t.take_profit_3,
+                rsi=t.rsi,
+                sentiment_score=score,
+                news_score=snap.news_sentiment.score if snap.news_sentiment else 0.0,
+                rss_score=snap.rss_sentiment.score if snap.rss_sentiment else 0.0,
+                confluence_factors=t.confluence_factors,
+                horizon=t.horizon,
+                horizon_reason=t.horizon_reason,
+                chart_path=chart_path,
+                institutional_score=inst_score,
+                pct_sl=_pct(t.stop_loss),
+                pct_tp1=_pct(t.take_profit_1),
+                pct_tp2=_pct(t.take_profit),
+                pct_tp3=_pct(t.take_profit_3),
+                vwap=t.vwap,
+                poc_price=t.poc_price,
+                fib_618=t.fib_618,
+                golden_cross=t.golden_cross,
+                rsi_divergence=t.rsi_divergence,
+                pivot_r1=t.pivot_r1,
+                pivot_r2=t.pivot_r2,
+                pivot_s1=t.pivot_s1,
+                pivot_s2=t.pivot_s2,
+                scanner_hit=True,
+                risk_reward=t.risk_reward,
+                ema_21=t.ema_21,
+            )
+
+            message_id = await send_alert(
+                alert, headlines, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
+            )
+            if message_id is not None:
+                log_alert(alert, technical_score=t.technical_score, telegram_message_id=message_id)
+                scanner_state.mark_alerted(ticker, entry)
+                log.info("Scanner alert sent: %s %s (RR=%.2f)", ticker, t.direction, t.risk_reward)
+
+        except Exception as exc:
+            log.error("Scanner: unexpected error for %s — %s: %s", ticker, type(exc).__name__, exc)
+
+
+def run_scanner(scanner_state: ScannerCooldownTracker) -> None:
+    """Synchronous APScheduler entry point for the autonomous market scanner."""
+    try:
+        asyncio.run(_async_scanner_cycle(scanner_state))
+    except Exception as exc:
+        log.error("Scanner cycle failed: %s", exc)
+
+
 def main() -> None:
     validate_secrets()
     init_db()
     state: dict[str, TickerSnapshot] = {}
+    scanner_state = ScannerCooldownTracker()
     scheduler = BlockingScheduler(timezone="America/New_York")
 
     # Intraday monitoring: every 15 min, 9:00–15:45 ET, Mon–Fri
@@ -255,6 +366,18 @@ def main() -> None:
             minute="*/2",
             timezone="America/New_York",
         ),
+    )
+
+    # Autonomous Market Hunter: every 15 min, 9:30–15:45 ET, Mon–Fri
+    scheduler.add_job(
+        run_scanner,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour="9-15",
+            minute="0,15,30,45",
+            timezone="America/New_York",
+        ),
+        args=[scanner_state],
     )
 
     log.info("Stock Sentinel started. Watching: %s", ", ".join(config.WATCHLIST))

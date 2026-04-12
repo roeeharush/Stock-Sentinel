@@ -135,8 +135,8 @@ def test_build_message_horizon_section():
     with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
         msg = build_message(alert_with_horizon, [])
     assert "טווח קצר" in msg
-    # New format: "ניתוח אנליסט" section (fallback to horizon_reason)
-    assert "ניתוח אנליסט" in msg
+    # New format: "סיכום אנליסט" section (Task 17.2)
+    assert "סיכום אנליסט" in msg
     assert "פריצת ווליום" in msg
 
 
@@ -261,12 +261,66 @@ def test_build_message_analyst_summary_vwap():
         ticker="NVDA", direction="LONG", entry=810.0,
         stop_loss=792.0, take_profit=846.0, rsi=27.0,
         sentiment_score=0.5,
-        vwap=808.0,  # within 0.25% of entry — triggers the summary
+        vwap=808.0,  # within 2% of entry — triggers the VWAP summary line
     )
     with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
         msg = build_message(alert_vwap, [])
     assert "VWAP" in msg
-    assert "ניתוח אנליסט" in msg
+    assert "סיכום אנליסט" in msg
+
+
+def test_build_message_scanner_header():
+    """scanner_hit=True produces '🔍 מנייה חמה' header instead of '🎯 איתות'."""
+    alert_scan = Alert(
+        ticker="SOFI", direction="LONG", entry=10.0,
+        stop_loss=9.5, take_profit=11.0, rsi=27.0,
+        sentiment_score=0.5,
+        scanner_hit=True,
+    )
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert_scan, [])
+    assert "מנייה חמה" in msg
+    assert "🔍" in msg
+    assert "SOFI" in msg
+
+
+def test_build_message_watchlist_header():
+    """scanner_hit=False (default) produces '🎯 איתות למסחר' header."""
+    alert_watch = Alert(
+        ticker="NVDA", direction="LONG", entry=810.0,
+        stop_loss=792.0, take_profit=846.0, rsi=27.0,
+        sentiment_score=0.5,
+    )
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert_watch, [])
+    assert "🎯" in msg
+    assert "איתות למסחר" in msg
+
+
+def test_build_message_risk_reward_displayed():
+    """When risk_reward is set, the R/R ratio appears in the message."""
+    alert_rr = Alert(
+        ticker="NVDA", direction="LONG", entry=200.0,
+        stop_loss=190.0, take_profit=220.0, rsi=27.0,
+        sentiment_score=0.5,
+        risk_reward=2.0,
+    )
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert_rr, [])
+    assert "2.0" in msg
+
+
+def test_build_message_ma_ribbon_golden_cross():
+    """Golden Cross triggers MA ribbon paragraph in analyst summary."""
+    alert_gc = Alert(
+        ticker="NVDA", direction="LONG", entry=810.0,
+        stop_loss=792.0, take_profit=846.0, rsi=27.0,
+        sentiment_score=0.5,
+        golden_cross=True,
+    )
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert_gc, [])
+    assert "Golden Cross" in msg
 
 
 def test_visualizer_generate_chart_creates_png():

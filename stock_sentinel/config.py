@@ -43,6 +43,18 @@ SCORE_WEIGHT_RSI: int = 20
 SCORE_WEIGHT_MACD: int = 15
 
 
+# ── Task 17.2: Autonomous Hunter ──────────────────────────────────────────────
+SCANNER_MIN_MARKET_CAP: float = 2e9     # 2 B minimum
+SCANNER_MIN_VOLUME: int       = 1_000_000
+SCANNER_TOP_N: int            = 25      # candidates fetched per scan cycle
+SCANNER_COOLDOWN_HOURS: float = 4.0     # hours before same ticker can fire again
+SCANNER_PRICE_MOVE_PCT: float = 3.0     # re-alert if price moved >3% since last alert
+SCANNER_JITTER_MIN: float     = 5.0     # seconds — minimum random jitter between API calls
+SCANNER_JITTER_MAX: float     = 10.0    # seconds — maximum random jitter
+RR_MIN: float                 = 1.5     # minimum Risk/Reward ratio to pass filter
+ATR_PCT_HIGH_THRESHOLD: float = 3.0     # ATR% >= this triggers SHORT_TERM via volatility
+
+
 def validate_secrets() -> None:
     """Call from scheduler.main() before starting the loop."""
     missing = [k for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
