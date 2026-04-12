@@ -91,6 +91,21 @@ class NewsFlash:
 
 
 @dataclass
+class MacroFlash:
+    """A high-impact macro / political headline with no specific ticker."""
+    title: str
+    summary: str                # 1-2 sentence market-impact explanation
+    url: str
+    source: str
+    sentiment_score: float      # -1.0 to +1.0
+    influencers: list[str] = field(default_factory=list)   # matched MACRO_INFLUENCERS
+    reaction: str = ""          # "bullish" (risk-on) | "bearish" (risk-off)
+    affected_assets: list[str] = field(default_factory=lambda: ["SPY", "QQQ", "DIA"])
+    published_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    item_id: str = ""
+
+
+@dataclass
 class ScannerCandidate:
     """A ticker surfaced by the autonomous market scanner."""
     ticker: str

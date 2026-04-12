@@ -8,9 +8,10 @@ from stock_sentinel.notifier import (
     build_message, generate_chart, send_alert,
     build_daily_report, send_daily_report,
     build_news_flash_message, send_news_flash,
+    build_macro_flash_message, send_macro_flash,
 )
 from stock_sentinel.visualizer import generate_chart as visualizer_generate_chart
-from stock_sentinel.models import Alert, NewsFlash, TechnicalSignal
+from stock_sentinel.models import Alert, MacroFlash, NewsFlash, TechnicalSignal
 
 
 def _signal():
@@ -452,4 +453,109 @@ async def test_send_news_flash_failure_returns_false():
         MockBot.return_value = mock_instance
         mock_instance.send_message = AsyncMock(side_effect=TelegramError("fail"))
         result = await send_news_flash(flash, "fake_token", "fake_chat")
+    assert result is False
+
+
+# ── Task 23: Macro Flash notifier tests ──────────────────────────────────────
+
+def _macro_flash(reaction="bearish", url="https://reuters.com/macro/1"):
+    return MacroFlash(
+        title="Fed raises rates sharply — strong hawkish signal",
+        summary="Fed raises rates. האירוע קשור ל-Fed ועשוי להשפיע על כיוון השוק הכללי — סנטימנט שלילי (Risk-Off).",
+        url=url,
+        source="Reuters",
+        sentiment_score=-0.8,
+        influencers=["Fed", "Interest Rate"],
+        reaction=reaction,
+        affected_assets=["SPY", "QQQ", "DIA"],
+        published_at=datetime(2025, 3, 20, 18, 0, tzinfo=timezone.utc),
+        item_id="macro-test-001",
+    )
+
+
+def test_build_macro_flash_message_header():
+    msg = build_macro_flash_message(_macro_flash())
+    assert "🏛️" in msg
+    assert "אירוע מאקרו משמעותי" in msg
+    assert "🌐" in msg
+    assert "מבזק מאקרו ופוליטיקה עולמית" in msg
+
+
+def test_build_macro_flash_message_bearish_sentiment():
+    msg = build_macro_flash_message(_macro_flash("bearish"))
+    assert "📉" in msg
+    assert "Bearish" in msg
+    assert "Risk-Off" in msg
+
+
+def test_build_macro_flash_message_bullish_sentiment():
+    mf = _macro_flash("bullish")
+    mf.sentiment_score = 0.8
+    msg = build_macro_flash_message(mf)
+    assert "📈" in msg
+    assert "Bullish" in msg
+    assert "Risk-On" in msg
+
+
+def test_build_macro_flash_message_contains_title():
+    msg = build_macro_flash_message(_macro_flash())
+    assert "Fed raises rates" in msg
+
+
+def test_build_macro_flash_message_contains_summary():
+    msg = build_macro_flash_message(_macro_flash())
+    assert "Risk-Off" in msg
+
+
+def test_build_macro_flash_message_contains_influencers():
+    msg = build_macro_flash_message(_macro_flash())
+    assert "Fed" in msg
+
+
+def test_build_macro_flash_message_contains_affected_assets():
+    msg = build_macro_flash_message(_macro_flash())
+    assert "SPY" in msg
+    assert "QQQ" in msg
+    assert "DIA" in msg
+
+
+def test_build_macro_flash_message_contains_source_link():
+    msg = build_macro_flash_message(_macro_flash(url="https://reuters.com/macro/1"))
+    assert "Reuters" in msg
+    assert "https://reuters.com/macro/1" in msg
+
+
+def test_build_macro_flash_message_no_url_shows_source():
+    mf = _macro_flash(url="")
+    msg = build_macro_flash_message(mf)
+    assert "Reuters" in msg
+
+
+def test_build_macro_flash_message_timestamp():
+    msg = build_macro_flash_message(_macro_flash())
+    assert "20/03/2025" in msg
+
+
+@pytest.mark.asyncio
+async def test_send_macro_flash_success():
+    mf = _macro_flash()
+    with patch("stock_sentinel.notifier.Bot") as MockBot:
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(return_value=MagicMock())
+        result = await send_macro_flash(mf, "fake_token", "fake_chat")
+    assert result is True
+    call_kwargs = mock_instance.send_message.call_args.kwargs
+    assert "אירוע מאקרו" in call_kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_send_macro_flash_failure_returns_false():
+    from telegram.error import TelegramError
+    mf = _macro_flash()
+    with patch("stock_sentinel.notifier.Bot") as MockBot:
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(side_effect=TelegramError("fail"))
+        result = await send_macro_flash(mf, "fake_token", "fake_chat")
     assert result is False

@@ -3,7 +3,7 @@ import asyncio
 from datetime import datetime, timezone
 from telegram import Bot
 from telegram.error import TelegramError
-from stock_sentinel.models import Alert, NewsFlash
+from stock_sentinel.models import Alert, MacroFlash, NewsFlash
 from stock_sentinel.translator import translate_to_hebrew
 from stock_sentinel.visualizer import generate_chart  # re-export for backward compat
 
@@ -12,7 +12,8 @@ log = logging.getLogger(__name__)
 # ── re-export so scheduler.py import stays unchanged ─────────────────────────
 __all__ = ["build_message", "generate_chart", "send_alert",
            "build_daily_report", "send_daily_report", "send_trade_update",
-           "build_news_flash_message", "send_news_flash"]
+           "build_news_flash_message", "send_news_flash",
+           "build_macro_flash_message", "send_macro_flash"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -310,6 +311,59 @@ async def send_news_flash(flash: NewsFlash, bot_token: str, chat_id: str) -> boo
         return True
     except TelegramError as exc:
         log.warning("send_news_flash failed for %s: %s", flash.ticker, exc)
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Macro Flash (Task 23)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_macro_flash_message(flash: MacroFlash) -> str:
+    """Build Hebrew Telegram message for a macro / political catalyst alert."""
+    if flash.reaction == "bullish":
+        sentiment_icon  = "📈"
+        sentiment_label = "Bullish — Risk-On (צפוי זרימת כסף לשוק)"
+    else:
+        sentiment_icon  = "📉"
+        sentiment_label = "Bearish — Risk-Off (צפויה יציאת כסף מהשוק)"
+
+    influencers_str   = " | ".join(flash.influencers[:4]) if flash.influencers else "מאקרו כללי"
+    assets_str        = " / ".join(flash.affected_assets)
+
+    lines = [
+        "🏛️ *אירוע מאקרו משמעותי*",
+        f"🌐 *מבזק מאקרו ופוליטיקה עולמית*",
+        "",
+        f"📰 *כותרת:* {flash.title}",
+        "",
+        f"📋 *ניתוח שוק:* {flash.summary}",
+        "",
+        f"{sentiment_icon} *סנטימנט:* {sentiment_label}",
+        f"🔑 *טריגרים:* {influencers_str}",
+        f"📊 *נכסים מושפעים:* {assets_str}",
+    ]
+
+    if flash.url:
+        lines += ["", f"🔗 [מקור: {flash.source}]({flash.url})"]
+    else:
+        lines += ["", f"📡 מקור: {flash.source}"]
+
+    lines += [
+        "",
+        f"⏰ _{flash.published_at.strftime('%d/%m/%Y %H:%M')} UTC_",
+    ]
+    return "\n".join(lines)
+
+
+async def send_macro_flash(flash: MacroFlash, bot_token: str, chat_id: str) -> bool:
+    """Send a macro catalyst flash via Telegram. Returns True on success."""
+    bot  = Bot(token=bot_token)
+    text = build_macro_flash_message(flash)
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        return True
+    except TelegramError as exc:
+        log.warning("send_macro_flash failed: %s", exc)
         return False
 
 

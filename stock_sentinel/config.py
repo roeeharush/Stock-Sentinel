@@ -69,6 +69,13 @@ NEWS_CATALYST_KEYWORDS: list[str] = [
     "bankruptcy", "default", "recall", "layoffs", "restructuring",
 ]
 
+# ── Task 23: Global Macro & Political Catalyst Engine ─────────────────────────
+MACRO_INFLUENCERS: list[str] = [
+    "Trump", "Biden", "Powell", "Fed", "FOMC",
+    "Interest Rates", "Interest Rate",
+    "Tariff", "Trade War", "Inflation", "CPI", "Treasury",
+]
+
 # ── Task 17.2: Autonomous Hunter ──────────────────────────────────────────────
 SCANNER_MIN_MARKET_CAP: float = 2e9     # 2 B minimum
 SCANNER_MIN_VOLUME: int       = 1_000_000

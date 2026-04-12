@@ -1,6 +1,6 @@
-"""Task 21.5: Universal News Catalyst Engine — 24/7 operation.
+"""Tasks 21.5 / 23: Universal News Catalyst Engine — 24/7 operation.
 
-Two parallel scanning paths:
+Three parallel scanning paths:
   1. Watchlist path  — polls yfinance + Google News RSS per watchlist ticker;
                        applies full catalyst keyword list + polarization filter;
                        runs TA confirmation for watchlist tickers.
@@ -8,6 +8,11 @@ Two parallel scanning paths:
                        extracts ticker symbols from headlines;
                        applies high-impact-only keyword filter + polarization +
                        market-cap liquidity check (>500 M) for non-watchlist tickers.
+  3. Macro path      — same general RSS feed items, but detects MACRO_INFLUENCERS
+                       keywords (Trump, Fed, FOMC, CPI, Tariff, etc.) with no
+                       ticker required; emits MacroFlash objects affecting SPY/QQQ/DIA.
+
+Return type: tuple[list[NewsFlash], list[MacroFlash]]
 """
 import asyncio
 import re
@@ -19,12 +24,13 @@ import yfinance as yf
 
 from stock_sentinel.analyzer import compute_signals, fetch_ohlcv
 from stock_sentinel.config import (
+    MACRO_INFLUENCERS,
     NEWS_CATALYST_KEYWORDS,
     NEWS_DISCOVERY_KEYWORDS,
     NEWS_DISCOVERY_MIN_MARKET_CAP,
     NEWS_SENTIMENT_THRESHOLD,
 )
-from stock_sentinel.models import NewsFlash
+from stock_sentinel.models import MacroFlash, NewsFlash
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sentiment scoring
@@ -152,7 +158,13 @@ class NewsEngineState:
 def _matches_catalyst(title: str, keywords: list[str]) -> list[str]:
     """Return the subset of *keywords* found in *title* (case-insensitive)."""
     lower = title.lower()
-    return [kw for kw in keywords if kw in lower]
+    return [kw for kw in keywords if kw.lower() in lower]
+
+
+def _matches_macro(title: str) -> list[str]:
+    """Return MACRO_INFLUENCERS terms found in *title* (case-insensitive)."""
+    lower = title.lower()
+    return [kw for kw in MACRO_INFLUENCERS if kw.lower() in lower]
 
 
 def _score_headline(title: str) -> float:
@@ -305,8 +317,8 @@ def _fetch_general_news() -> list[dict]:
 async def run_news_engine_cycle(
     watchlist: list[str],
     engine_state: NewsEngineState,
-) -> list[NewsFlash]:
-    """Poll all sources, emit NewsFlash objects for new catalyst hits.
+) -> tuple[list[NewsFlash], list[MacroFlash]]:
+    """Poll all sources; emit NewsFlash and MacroFlash objects for new catalyst hits.
 
     Path 1 — Watchlist: fetch ticker-specific news; apply full catalyst keyword
               list + polarization filter; enrich with TA confirmation.
@@ -315,10 +327,15 @@ async def run_news_engine_cycle(
               symbols; apply HIGH-IMPACT keyword filter + polarization + market
               cap liquidity check for non-watchlist tickers.
 
-    Returns list of new NewsFlash objects (may be empty).
+    Path 3 — Macro: same general feed items; match MACRO_INFLUENCERS keywords
+              (Fed/FOMC/CPI/Trump/Tariff …); no ticker required; default
+              affected assets = SPY, QQQ, DIA.
+
+    Returns (news_flashes, macro_flashes) — both may be empty.
     """
     watchlist_set = set(watchlist)
     flashes: list[NewsFlash] = []
+    macro_flashes: list[MacroFlash] = []
 
     # ── Path 1: Watchlist ────────────────────────────────────────────────────
     for ticker in watchlist:
@@ -392,16 +409,16 @@ async def run_news_engine_cycle(
         # handled in Path 1; skip them here to avoid duplicates)
         candidates = [t for t in _extract_tickers(title) if t not in watchlist_set]
         if not candidates:
-            engine_state.mark_seen(item_id)
+            # No ticker found — do NOT mark seen yet; Macro path may still want it
             continue
 
         # High-impact keyword filter (stricter than watchlist path)
         matched_hik = _matches_catalyst(title, NEWS_DISCOVERY_KEYWORDS)
         if not matched_hik:
-            engine_state.mark_seen(item_id)
+            # No high-impact keyword — do NOT mark seen; Macro path may still want it
             continue
 
-        # Polarization filter
+        # Polarization filter — mark seen here because Macro also requires polarization
         score = _score_headline(title)
         if not _is_polarized(score):
             engine_state.mark_seen(item_id)
@@ -434,4 +451,47 @@ async def run_news_engine_cycle(
         )
         flashes.append(flash)
 
-    return flashes
+    # ── Path 3: Macro / Political ────────────────────────────────────────────
+    # Re-use the already-fetched general_items; items consumed by Discovery
+    # (already mark_seen'd) are skipped here too.
+    for raw in general_items:
+        item_id = raw["item_id"]
+        if engine_state.is_seen(item_id):
+            continue
+
+        title = raw["title"]
+
+        matched_macro = _matches_macro(title)
+        if not matched_macro:
+            engine_state.mark_seen(item_id)
+            continue
+
+        score = _score_headline(title)
+        if not _is_polarized(score):
+            engine_state.mark_seen(item_id)
+            continue
+
+        reaction = "bullish" if score > 0 else "bearish"
+        engine_state.mark_seen(item_id)
+
+        # Build a 2-sentence market-impact summary
+        influencer_str = " / ".join(matched_macro[:3])
+        direction_heb  = "חיובי (Risk-On)" if reaction == "bullish" else "שלילי (Risk-Off)"
+        summary = (
+            f"{title}. "
+            f"האירוע קשור ל-{influencer_str} ועשוי להשפיע על כיוון השוק הכללי — "
+            f"סנטימנט {direction_heb}."
+        )
+
+        macro_flashes.append(MacroFlash(
+            title=title,
+            summary=summary,
+            url=raw["url"],
+            source=raw["source"],
+            sentiment_score=score,
+            influencers=matched_macro,
+            reaction=reaction,
+            item_id=item_id,
+        ))
+
+    return flashes, macro_flashes

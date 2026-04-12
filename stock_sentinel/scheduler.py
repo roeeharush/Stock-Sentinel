@@ -13,7 +13,10 @@ from stock_sentinel.scraper import init_browser, scrape_sentiment, close_browser
 from stock_sentinel.news_scraper import fetch_news_sentiment
 from stock_sentinel.rss_provider import fetch_rss_sentiment
 from stock_sentinel.signal_filter import combined_sentiment_score, should_alert, update_cooldown
-from stock_sentinel.notifier import generate_chart, send_alert, send_daily_report, send_news_flash
+from stock_sentinel.notifier import (
+    generate_chart, send_alert, send_daily_report,
+    send_news_flash, send_macro_flash,
+)
 from stock_sentinel.db import init_db, log_alert, get_daily_stats
 from stock_sentinel.monitor import check_active_trades
 from stock_sentinel.validator import validate_daily
@@ -319,8 +322,9 @@ def run_scanner(scanner_state: ScannerCooldownTracker) -> None:
 
 
 async def _async_news_engine_cycle(news_state: NewsEngineState) -> None:
-    """Fetch breaking news, filter by catalyst + polarization, send Telegram flashes."""
-    flashes = await run_news_engine_cycle(config.WATCHLIST, news_state)
+    """Fetch breaking news + macro alerts, filter, and send Telegram messages."""
+    flashes, macro_flashes = await run_news_engine_cycle(config.WATCHLIST, news_state)
+
     for flash in flashes:
         try:
             sent = await send_news_flash(flash, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
@@ -331,6 +335,17 @@ async def _async_news_engine_cycle(news_state: NewsEngineState) -> None:
                 )
         except Exception as exc:
             log.error("News flash dispatch failed for %s: %s", flash.ticker, exc)
+
+    for mflash in macro_flashes:
+        try:
+            sent = await send_macro_flash(mflash, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
+            if sent:
+                log.info(
+                    "Macro flash sent: %s — %s [%s]",
+                    mflash.reaction, mflash.source, ", ".join(mflash.influencers[:3]),
+                )
+        except Exception as exc:
+            log.error("Macro flash dispatch failed: %s", exc)
 
 
 def run_news_engine(news_state: NewsEngineState) -> None:

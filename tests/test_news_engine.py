@@ -18,9 +18,11 @@ from stock_sentinel.news_engine import (
     _get_market_cap,
     _is_polarized,
     _matches_catalyst,
+    _matches_macro,
     _score_headline,
     run_news_engine_cycle,
 )
+from stock_sentinel.models import MacroFlash
 
 
 # ── _matches_catalyst ─────────────────────────────────────────────────────────
@@ -238,9 +240,10 @@ async def test_cycle_emits_flash_for_catalyst_polarized():
     state = NewsEngineState()
     with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=yf_items), \
          patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=[]), \
          patch("stock_sentinel.news_engine.fetch_ohlcv", side_effect=Exception("no data")),  \
          patch("stock_sentinel.news_engine.compute_signals", side_effect=Exception("no data")):
-        flashes = await run_news_engine_cycle(["NVDA"], state)
+        flashes, _ = await run_news_engine_cycle(["NVDA"], state)
     assert len(flashes) == 1
     assert flashes[0].ticker == "NVDA"
     assert flashes[0].reaction in ("bullish", "bearish")
@@ -255,10 +258,11 @@ async def test_cycle_deduplicates_seen_items():
     state = NewsEngineState()
     with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=yf_items), \
          patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=[]), \
          patch("stock_sentinel.news_engine.fetch_ohlcv", side_effect=Exception("no data")),  \
          patch("stock_sentinel.news_engine.compute_signals", side_effect=Exception("no data")):
-        flashes1 = await run_news_engine_cycle(["NVDA"], state)
-        flashes2 = await run_news_engine_cycle(["NVDA"], state)
+        flashes1, _ = await run_news_engine_cycle(["NVDA"], state)
+        flashes2, _ = await run_news_engine_cycle(["NVDA"], state)
     assert len(flashes1) == 1
     assert len(flashes2) == 0
 
@@ -269,8 +273,9 @@ async def test_cycle_skips_non_catalyst_item():
     yf_items = [{"title": "Market recap: mixed session", "url": "", "item_id": "id-002", "source": "x"}]
     state = NewsEngineState()
     with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=yf_items), \
-         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]):
-        flashes = await run_news_engine_cycle(["NVDA"], state)
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=[]):
+        flashes, _ = await run_news_engine_cycle(["NVDA"], state)
     assert flashes == []
 
 
@@ -281,8 +286,9 @@ async def test_cycle_skips_low_sentiment_item():
     yf_items = [{"title": "Company merger announced today", "url": "", "item_id": "id-003", "source": "x"}]
     state = NewsEngineState()
     with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=yf_items), \
-         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]):
-        flashes = await run_news_engine_cycle(["NVDA"], state)
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=[]):
+        flashes, _ = await run_news_engine_cycle(["NVDA"], state)
     assert flashes == []
 
 
@@ -297,9 +303,10 @@ async def test_cycle_ta_confirmation_enriches_summary():
     state = NewsEngineState()
     with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=yf_items), \
          patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=[]), \
          patch("stock_sentinel.news_engine.fetch_ohlcv", return_value=MagicMock()), \
          patch("stock_sentinel.news_engine.compute_signals", return_value=mock_signal):
-        flashes = await run_news_engine_cycle(["NVDA"], state)
+        flashes, _ = await run_news_engine_cycle(["NVDA"], state)
     assert len(flashes) == 1
     assert "עולה" in flashes[0].summary
     assert "LONG" in flashes[0].summary
@@ -316,18 +323,22 @@ async def test_cycle_ta_neutral_sets_no_entry_summary():
     state = NewsEngineState()
     with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=yf_items), \
          patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=[]), \
          patch("stock_sentinel.news_engine.fetch_ohlcv", return_value=MagicMock()), \
          patch("stock_sentinel.news_engine.compute_signals", return_value=mock_signal):
-        flashes = await run_news_engine_cycle(["NVDA"], state)
+        flashes, _ = await run_news_engine_cycle(["NVDA"], state)
     assert len(flashes) == 1
     assert "אין אישור טכני" in flashes[0].summary
 
 
 @pytest.mark.asyncio
 async def test_cycle_empty_watchlist():
-    with patch("stock_sentinel.news_engine._fetch_general_news", return_value=[]):
-        flashes = await run_news_engine_cycle([], NewsEngineState())
+    with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=[]):
+        flashes, macro_flashes = await run_news_engine_cycle([], NewsEngineState())
     assert flashes == []
+    assert macro_flashes == []
 
 
 # ── _extract_tickers ──────────────────────────────────────────────────────────
@@ -506,7 +517,7 @@ async def test_discovery_emits_flash_for_non_watchlist_ticker():
          patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
          patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items), \
          patch("stock_sentinel.news_engine._get_market_cap", return_value=3e9):
-        flashes = await run_news_engine_cycle(["NVDA"], state)
+        flashes, _ = await run_news_engine_cycle(["NVDA"], state)
     assert len(flashes) == 1
     assert flashes[0].is_watchlist is False
     assert flashes[0].ticker == "SOXX"
@@ -526,7 +537,7 @@ async def test_discovery_skips_low_impact_keywords():
          patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
          patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items), \
          patch("stock_sentinel.news_engine._get_market_cap", return_value=3e9):
-        flashes = await run_news_engine_cycle(["NVDA"], state)
+        flashes, _ = await run_news_engine_cycle(["NVDA"], state)
     assert flashes == []
 
 
@@ -542,7 +553,7 @@ async def test_discovery_skips_small_cap_ticker():
          patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
          patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items), \
          patch("stock_sentinel.news_engine._get_market_cap", return_value=100e6):  # 100M < 500M
-        flashes = await run_news_engine_cycle(["NVDA"], state)
+        flashes, _ = await run_news_engine_cycle(["NVDA"], state)
     assert flashes == []
 
 
@@ -559,7 +570,7 @@ async def test_discovery_watchlist_ticker_in_general_news_excluded():
          patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
          patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items), \
          patch("stock_sentinel.news_engine._get_market_cap", return_value=5e9):
-        flashes = await run_news_engine_cycle(["NVDA"], state)
+        flashes, _ = await run_news_engine_cycle(["NVDA"], state)
     # No flash because item_id was pre-seen
     assert flashes == []
 
@@ -576,8 +587,8 @@ async def test_discovery_deduplicates_across_cycles():
          patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
          patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items), \
          patch("stock_sentinel.news_engine._get_market_cap", return_value=3e9):
-        flashes1 = await run_news_engine_cycle(["NVDA"], state)
-        flashes2 = await run_news_engine_cycle(["NVDA"], state)
+        flashes1, _ = await run_news_engine_cycle(["NVDA"], state)
+        flashes2, _ = await run_news_engine_cycle(["NVDA"], state)
     assert len(flashes1) == 1
     assert len(flashes2) == 0
 
@@ -597,3 +608,132 @@ def test_state_clear_resets_liquidity():
     state.set_liquidity_cache("NVDA", True)
     state.clear()
     assert not state.has_liquidity_cache("NVDA")
+
+
+# ── Task 23: _matches_macro ───────────────────────────────────────────────────
+
+def test_matches_macro_finds_fed():
+    result = _matches_macro("Fed raises interest rate by 25 basis points")
+    assert "Fed" in result
+
+
+def test_matches_macro_finds_interest_rate():
+    result = _matches_macro("Interest Rates expected to rise")
+    assert "Interest Rates" in result or "Interest Rate" in result
+
+
+def test_matches_macro_finds_trump():
+    result = _matches_macro("Trump announces new tariff on Chinese goods")
+    assert "Trump" in result
+    assert "Tariff" in result
+
+
+def test_matches_macro_finds_cpi():
+    result = _matches_macro("CPI inflation data comes in hotter than expected")
+    assert "CPI" in result
+    assert "Inflation" in result
+
+
+def test_matches_macro_case_insensitive():
+    result = _matches_macro("powell signals rate cuts ahead")
+    assert "Powell" in result
+
+
+def test_matches_macro_no_match():
+    result = _matches_macro("Apple announces new iPhone model")
+    assert result == []
+
+
+def test_matches_macro_fomc():
+    result = _matches_macro("FOMC meeting minutes released today")
+    assert "FOMC" in result
+
+
+# ── Task 23: Macro path in run_news_engine_cycle ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_macro_emits_flash_for_fed_headline():
+    """Fed headline with high polarization → MacroFlash."""
+    general_items = [
+        {"title": "Fed raises rates sharply — strong hawkish signal", "url": "https://r.com/1",
+         "item_id": "macro-001", "source": "Reuters"},
+    ]
+    state = NewsEngineState()
+    with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items):
+        _, macro_flashes = await run_news_engine_cycle(["NVDA"], state)
+    assert len(macro_flashes) == 1
+    mf = macro_flashes[0]
+    assert "Fed" in mf.influencers
+    assert mf.reaction in ("bullish", "bearish")
+    assert "SPY" in mf.affected_assets
+    assert "QQQ" in mf.affected_assets
+    assert "DIA" in mf.affected_assets
+
+
+@pytest.mark.asyncio
+async def test_macro_summary_contains_influencer():
+    """Macro flash summary names the triggering influencer."""
+    general_items = [
+        {"title": "Trump imposes tariff — strong market rally", "url": "",
+         "item_id": "macro-002", "source": "Reuters"},
+    ]
+    state = NewsEngineState()
+    with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items):
+        _, macro_flashes = await run_news_engine_cycle(["NVDA"], state)
+    assert len(macro_flashes) == 1
+    assert "Trump" in macro_flashes[0].summary or "Tariff" in macro_flashes[0].summary
+
+
+@pytest.mark.asyncio
+async def test_macro_skips_neutral_sentiment():
+    """Macro keyword present but headline not polarized → no macro flash."""
+    general_items = [
+        {"title": "Fed meeting scheduled for next Tuesday", "url": "",
+         "item_id": "macro-003", "source": "Reuters"},
+    ]
+    state = NewsEngineState()
+    with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items):
+        _, macro_flashes = await run_news_engine_cycle(["NVDA"], state)
+    assert macro_flashes == []
+
+
+@pytest.mark.asyncio
+async def test_macro_deduplicates_across_cycles():
+    """Macro items seen in cycle 1 are not re-emitted in cycle 2."""
+    general_items = [
+        {"title": "Fed raises rates sharply — strong hawkish signal", "url": "",
+         "item_id": "macro-004", "source": "Reuters"},
+    ]
+    state = NewsEngineState()
+    with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items):
+        _, mf1 = await run_news_engine_cycle(["NVDA"], state)
+        _, mf2 = await run_news_engine_cycle(["NVDA"], state)
+    assert len(mf1) == 1
+    assert len(mf2) == 0
+
+
+@pytest.mark.asyncio
+async def test_macro_and_discovery_item_not_double_emitted():
+    """An item consumed by the Discovery path is not also emitted as a macro flash."""
+    # "acquisition" + "SOXX" → Discovery consumes it first;
+    # "Treasury" would also match macro but item is already mark_seen'd
+    general_items = [
+        {"title": "SOXX Treasury acquisition deal with strong rally", "url": "",
+         "item_id": "combo-001", "source": "Reuters"},
+    ]
+    state = NewsEngineState()
+    with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items), \
+         patch("stock_sentinel.news_engine._get_market_cap", return_value=3e9):
+        flashes, macro_flashes = await run_news_engine_cycle(["NVDA"], state)
+    total = len(flashes) + len(macro_flashes)
+    assert total == 1
