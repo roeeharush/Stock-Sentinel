@@ -1,18 +1,53 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environment ────────────────────────────────────────────────────────
 venv/
+.venv/
+env/
+ENV/
+
+# ── Secrets & credentials ─────────────────────────────────────────────────────
 .env
 session/x_cookies.json
-/tmp/stock_sentinel_*.png
-__pycache__/
-*.pyc
-.pytest_cache/
+session/
 
-# OS / Editor
+# ── Database ──────────────────────────────────────────────────────────────────
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Generated chart images ────────────────────────────────────────────────────
+/tmp/stock_sentinel_*.png
+*.png
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# ── OS artefacts ──────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# ── Editor / IDE ──────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# Claude Code tool settings
+# ── Claude Code tool settings ─────────────────────────────────────────────────
 .claude/
+.claudecode.md
