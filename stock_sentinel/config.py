@@ -46,6 +46,12 @@ SCORE_WEIGHT_MACD: int = 15
 # ── Task 19: News Catalyst Engine ─────────────────────────────────────────────
 NEWS_ENGINE_POLL_MINUTES: int = 5          # how often to poll for breaking news
 NEWS_SENTIMENT_THRESHOLD: float = 0.55    # |score| must exceed this to qualify as polarized
+# Stricter keyword set for non-watchlist discovery (subset of catalyst keywords)
+NEWS_DISCOVERY_KEYWORDS: list[str] = [
+    "acquisition", "merger", "fda", "lawsuit", "sec", "earnings", "buyout", "partnership",
+]
+NEWS_DISCOVERY_MIN_MARKET_CAP: float = 500e6   # 500 M — minimum cap for discovered tickers
+
 NEWS_CATALYST_KEYWORDS: list[str] = [
     # Corporate events
     "merger", "acquisition", "takeover", "buyout", "spinoff", "ipo",

@@ -87,6 +87,7 @@ class NewsFlash:
     reaction: str = ""          # "bullish" | "bearish"
     published_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     item_id: str = ""           # de-duplication key (url or guid)
+    is_watchlist: bool = True   # False → discovered via general news scan
 
 
 @dataclass

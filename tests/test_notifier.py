@@ -402,6 +402,23 @@ def test_build_news_flash_message_contains_source_link():
     assert "https://example.com/story" in msg
 
 
+def test_build_news_flash_message_discovery_header():
+    """is_watchlist=False produces 💎 גילוי הזדמנות header."""
+    flash = _flash()
+    flash.is_watchlist = False
+    msg = build_news_flash_message(flash)
+    assert "💎" in msg
+    assert "גילוי הזדמנות" in msg
+    assert "NVDA" in msg
+
+
+def test_build_news_flash_message_watchlist_header_default():
+    """Default is_watchlist=True produces 📢 מבזק header."""
+    msg = build_news_flash_message(_flash())
+    assert "📢" in msg
+    assert "מבזק חדשות מתפרצות" in msg
+
+
 def test_build_news_flash_message_no_url_shows_source():
     flash = _flash(url="")
     msg = build_news_flash_message(flash)

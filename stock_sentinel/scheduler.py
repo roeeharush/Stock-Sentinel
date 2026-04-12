@@ -406,14 +406,16 @@ def main() -> None:
         args=[scanner_state],
     )
 
-    # Real-time News Catalyst Engine: every 5 minutes, 9:00–16:00 ET, Mon–Fri
+    # Real-time News Catalyst Engine: every 5 minutes, 24/7 — no market-hour
+    # restriction.  next_run_time=now() fires the first cycle immediately on
+    # startup instead of waiting a full interval.
     scheduler.add_job(
         run_news_engine,
         IntervalTrigger(
             minutes=config.NEWS_ENGINE_POLL_MINUTES,
-            timezone="America/New_York",
         ),
         args=[news_state],
+        next_run_time=datetime.now(timezone.utc),
     )
 
     log.info("Stock Sentinel started. Watching: %s", ", ".join(config.WATCHLIST))

@@ -1,4 +1,4 @@
-"""Tests for stock_sentinel.news_engine — Task 19."""
+"""Tests for stock_sentinel.news_engine — Tasks 19 / 21.5."""
 
 import io
 import textwrap
@@ -10,8 +10,12 @@ import pytest
 
 from stock_sentinel.news_engine import (
     NewsEngineState,
+    _check_liquidity,
+    _extract_tickers,
+    _fetch_general_news,
     _fetch_rss_news,
     _fetch_yfinance_news,
+    _get_market_cap,
     _is_polarized,
     _matches_catalyst,
     _score_headline,
@@ -321,5 +325,275 @@ async def test_cycle_ta_neutral_sets_no_entry_summary():
 
 @pytest.mark.asyncio
 async def test_cycle_empty_watchlist():
-    flashes = await run_news_engine_cycle([], NewsEngineState())
+    with patch("stock_sentinel.news_engine._fetch_general_news", return_value=[]):
+        flashes = await run_news_engine_cycle([], NewsEngineState())
     assert flashes == []
+
+
+# ── _extract_tickers ──────────────────────────────────────────────────────────
+
+def test_extract_tickers_finds_symbols():
+    result = _extract_tickers("NVDA and AMZN surge on earnings beat")
+    assert "NVDA" in result
+    assert "AMZN" in result
+
+
+def test_extract_tickers_filters_blocklist():
+    # "SEC", "FDA", "CEO" are all in the blocklist
+    result = _extract_tickers("SEC investigates CEO after FDA ruling")
+    assert "SEC" not in result
+    assert "FDA" not in result
+    assert "CEO" not in result
+
+
+def test_extract_tickers_ignores_lowercase():
+    # All-lowercase words are not tickers
+    result = _extract_tickers("nvda and amzn rally today")
+    assert result == []
+
+
+def test_extract_tickers_max_5_chars():
+    # 6-char uppercase word is not matched by the regex (limit is 5)
+    result = _extract_tickers("TOOLONG rises on news")
+    assert "TOOLONG" not in result
+
+
+def test_extract_tickers_deduplicates():
+    result = _extract_tickers("NVDA beats NVDA expectations")
+    assert result.count("NVDA") == 1
+
+
+def test_extract_tickers_empty_string():
+    assert _extract_tickers("") == []
+
+
+def test_extract_tickers_no_uppercase():
+    assert _extract_tickers("all lowercase text here") == []
+
+
+# ── _get_market_cap ───────────────────────────────────────────────────────────
+
+def test_get_market_cap_returns_value():
+    mock_fi = MagicMock()
+    mock_fi.market_cap = 2_000_000_000.0
+    with patch("stock_sentinel.news_engine.yf.Ticker") as MockTicker:
+        MockTicker.return_value.fast_info = mock_fi
+        cap = _get_market_cap("NVDA")
+    assert cap == 2_000_000_000.0
+
+
+def test_get_market_cap_returns_zero_on_error():
+    with patch("stock_sentinel.news_engine.yf.Ticker", side_effect=Exception("network")):
+        cap = _get_market_cap("BROKEN")
+    assert cap == 0.0
+
+
+def test_get_market_cap_returns_zero_for_none():
+    mock_fi = MagicMock()
+    mock_fi.market_cap = None
+    with patch("stock_sentinel.news_engine.yf.Ticker") as MockTicker:
+        MockTicker.return_value.fast_info = mock_fi
+        cap = _get_market_cap("TINY")
+    assert cap == 0.0
+
+
+# ── _check_liquidity ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_check_liquidity_passes_large_cap():
+    state = NewsEngineState()
+    with patch("stock_sentinel.news_engine._get_market_cap", return_value=3e9):
+        result = await _check_liquidity("NVDA", state, 500e6)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_check_liquidity_fails_small_cap():
+    state = NewsEngineState()
+    with patch("stock_sentinel.news_engine._get_market_cap", return_value=100e6):
+        result = await _check_liquidity("TINY", state, 500e6)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_check_liquidity_uses_cache():
+    state = NewsEngineState()
+    state.set_liquidity_cache("NVDA", True)
+    # _get_market_cap should NOT be called if cached
+    with patch("stock_sentinel.news_engine._get_market_cap") as mock_cap:
+        result = await _check_liquidity("NVDA", state, 500e6)
+    mock_cap.assert_not_called()
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_check_liquidity_caches_result():
+    state = NewsEngineState()
+    with patch("stock_sentinel.news_engine._get_market_cap", return_value=2e9):
+        await _check_liquidity("AMZN", state, 500e6)
+    assert state.has_liquidity_cache("AMZN")
+    assert state.get_liquidity_cache("AMZN") is True
+
+
+# ── _fetch_general_news ───────────────────────────────────────────────────────
+
+def _make_rss_feed(items: list[dict]) -> bytes:
+    channel_items = ""
+    for it in items:
+        channel_items += (
+            f"<item>"
+            f"<title>{it.get('title', '')}</title>"
+            f"<link>{it.get('link', '')}</link>"
+            f"<guid>{it.get('guid', '')}</guid>"
+            f"</item>"
+        )
+    return f"<rss><channel>{channel_items}</channel></rss>".encode()
+
+
+def test_fetch_general_news_combines_feeds():
+    xml_bytes = _make_rss_feed([
+        {"title": "Tech merger shakes market", "link": "https://ex.com/1", "guid": "g1"},
+        {"title": "Biotech FDA approval", "link": "https://ex.com/2", "guid": "g2"},
+    ])
+    with patch("stock_sentinel.news_engine.urllib.request.urlopen") as mock_open:
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: io.BytesIO(xml_bytes)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_open.return_value = mock_resp
+        items = _fetch_general_news()
+    # 3 feeds × 2 items = 6 (all feeds use same mock)
+    assert len(items) >= 2
+    titles = [it["title"] for it in items]
+    assert "Tech merger shakes market" in titles
+
+
+def test_fetch_general_news_skips_failing_feeds():
+    """A feed that throws does not prevent others from being fetched."""
+    call_count = [0]
+    xml_bytes = _make_rss_feed([{"title": "Big acquisition deal", "link": "https://x.com", "guid": "g1"}])
+
+    def _side_effect(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise Exception("timeout")
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: io.BytesIO(xml_bytes)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        return mock_resp
+
+    with patch("stock_sentinel.news_engine.urllib.request.urlopen", side_effect=_side_effect):
+        items = _fetch_general_news()
+    assert any(it["title"] == "Big acquisition deal" for it in items)
+
+
+def test_fetch_general_news_empty_when_all_fail():
+    with patch("stock_sentinel.news_engine.urllib.request.urlopen", side_effect=Exception("all down")):
+        items = _fetch_general_news()
+    assert items == []
+
+
+# ── Discovery path in run_news_engine_cycle ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_discovery_emits_flash_for_non_watchlist_ticker():
+    """High-impact headline with extractable ticker and sufficient market cap → discovery flash."""
+    general_items = [
+        {"title": "SOXX acquisition deal with strong rally", "url": "https://ex.com/1",
+         "item_id": "disc-001", "source": "Reuters"},
+    ]
+    state = NewsEngineState()
+    with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items), \
+         patch("stock_sentinel.news_engine._get_market_cap", return_value=3e9):
+        flashes = await run_news_engine_cycle(["NVDA"], state)
+    assert len(flashes) == 1
+    assert flashes[0].is_watchlist is False
+    assert flashes[0].ticker == "SOXX"
+    assert "acquisition" in flashes[0].catalyst_keywords
+
+
+@pytest.mark.asyncio
+async def test_discovery_skips_low_impact_keywords():
+    """Non-watchlist ticker with only low-impact catalyst (not in HIGH_IMPACT list) → no flash."""
+    # "launch" is in NEWS_CATALYST_KEYWORDS but NOT in NEWS_DISCOVERY_KEYWORDS (high-impact only)
+    general_items = [
+        {"title": "SOXX launches new product in breakthrough deal with strong gains", "url": "",
+         "item_id": "disc-002", "source": "Reuters"},
+    ]
+    state = NewsEngineState()
+    with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items), \
+         patch("stock_sentinel.news_engine._get_market_cap", return_value=3e9):
+        flashes = await run_news_engine_cycle(["NVDA"], state)
+    assert flashes == []
+
+
+@pytest.mark.asyncio
+async def test_discovery_skips_small_cap_ticker():
+    """Even with high-impact keyword, market cap below threshold → no flash."""
+    general_items = [
+        {"title": "SMLL acquisition deal with strong rally", "url": "",
+         "item_id": "disc-003", "source": "Reuters"},
+    ]
+    state = NewsEngineState()
+    with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items), \
+         patch("stock_sentinel.news_engine._get_market_cap", return_value=100e6):  # 100M < 500M
+        flashes = await run_news_engine_cycle(["NVDA"], state)
+    assert flashes == []
+
+
+@pytest.mark.asyncio
+async def test_discovery_watchlist_ticker_in_general_news_excluded():
+    """Ticker already in watchlist appearing in general news is skipped by discovery path."""
+    general_items = [
+        {"title": "NVDA acquisition deal surges higher", "url": "",
+         "item_id": "disc-004", "source": "Reuters"},
+    ]
+    state = NewsEngineState()
+    state.mark_seen("disc-004")   # pre-mark so watchlist path also skips it
+    with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items), \
+         patch("stock_sentinel.news_engine._get_market_cap", return_value=5e9):
+        flashes = await run_news_engine_cycle(["NVDA"], state)
+    # No flash because item_id was pre-seen
+    assert flashes == []
+
+
+@pytest.mark.asyncio
+async def test_discovery_deduplicates_across_cycles():
+    """Discovery items seen in cycle 1 are not re-emitted in cycle 2."""
+    general_items = [
+        {"title": "SOXX acquisition deal with strong rally", "url": "",
+         "item_id": "disc-005", "source": "Reuters"},
+    ]
+    state = NewsEngineState()
+    with patch("stock_sentinel.news_engine._fetch_yfinance_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_rss_news", return_value=[]), \
+         patch("stock_sentinel.news_engine._fetch_general_news", return_value=general_items), \
+         patch("stock_sentinel.news_engine._get_market_cap", return_value=3e9):
+        flashes1 = await run_news_engine_cycle(["NVDA"], state)
+        flashes2 = await run_news_engine_cycle(["NVDA"], state)
+    assert len(flashes1) == 1
+    assert len(flashes2) == 0
+
+
+# ── NewsEngineState — liquidity cache ─────────────────────────────────────────
+
+def test_state_liquidity_cache_roundtrip():
+    state = NewsEngineState()
+    assert not state.has_liquidity_cache("NVDA")
+    state.set_liquidity_cache("NVDA", True)
+    assert state.has_liquidity_cache("NVDA")
+    assert state.get_liquidity_cache("NVDA") is True
+
+
+def test_state_clear_resets_liquidity():
+    state = NewsEngineState()
+    state.set_liquidity_cache("NVDA", True)
+    state.clear()
+    assert not state.has_liquidity_cache("NVDA")

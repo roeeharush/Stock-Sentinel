@@ -273,8 +273,13 @@ def build_news_flash_message(flash: NewsFlash) -> str:
 
     keywords_str = ", ".join(flash.catalyst_keywords[:5]) if flash.catalyst_keywords else "חדשות מהותיות"
 
+    if getattr(flash, "is_watchlist", True):
+        header = f"📢 *מבזק חדשות מתפרצות — {flash.ticker}*"
+    else:
+        header = f"💎 *גילוי הזדמנות — חדשות חמות — {flash.ticker}*"
+
     lines = [
-        f"📢 *מבזק חדשות מתפרצות — {flash.ticker}*",
+        header,
         "",
         f"📰 *כותרת:* {flash.title}",
         "",
