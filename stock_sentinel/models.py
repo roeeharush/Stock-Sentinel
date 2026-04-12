@@ -58,6 +58,16 @@ class TechnicalSignal:
     obv_rising: bool = False         # OBV positive slope over last N bars
     horizon: str = ""                # "SHORT_TERM", "LONG_TERM", "BOTH", or ""
     horizon_reason: str = ""         # Hebrew explanation sentence
+    # --- Task 16: Expert Tier ---
+    pivot_r1: float = 0.0            # Floor pivot resistance 1
+    pivot_r2: float = 0.0            # Floor pivot resistance 2
+    pivot_s1: float = 0.0            # Floor pivot support 1
+    pivot_s2: float = 0.0            # Floor pivot support 2
+    rsi_divergence: str = ""         # "bullish", "bearish", or ""
+    poc_price: float = 0.0           # Volume Profile Point of Control
+    golden_cross: bool = False       # SMA50 > EMA200 (current state)
+    fib_618: float = 0.0             # Fibonacci 61.8% retracement level
+    fib_65: float = 0.0              # Fibonacci 65.0% retracement level
 
 @dataclass
 class TickerSnapshot:
@@ -87,3 +97,18 @@ class Alert:
     horizon: str = ""
     horizon_reason: str = ""
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # --- Task 16: Expert Tier ---
+    institutional_score: float = 0.0  # 1-10 composite quality rating
+    pct_sl: float = 0.0               # (stop_loss - entry) / entry * 100
+    pct_tp1: float = 0.0
+    pct_tp2: float = 0.0
+    pct_tp3: float = 0.0
+    vwap: float = 0.0
+    poc_price: float = 0.0
+    fib_618: float = 0.0
+    golden_cross: bool = False
+    rsi_divergence: str = ""
+    pivot_r1: float = 0.0
+    pivot_r2: float = 0.0
+    pivot_s1: float = 0.0
+    pivot_s2: float = 0.0

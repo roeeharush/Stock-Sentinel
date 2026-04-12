@@ -69,23 +69,52 @@ async def _async_cycle(
             headlines = snap.news_sentiment.headlines if snap.news_sentiment else []
             chart_path = generate_chart(ticker, df, snap.technical)
 
+            # ── Compute Expert Tier fields ─────────────────────────────────
+            t = snap.technical
+            entry = t.entry
+
+            def _pct(price: float) -> float:
+                return round((price - entry) / entry * 100.0, 1) if entry else 0.0
+
+            # Institutional score: blend of technical (0-7) + sentiment (0-3)
+            ts_component = t.technical_score * 7.0 / 100.0
+            ss_component = (score + 1.0) * 1.5
+            institutional_score = round(
+                min(max(ts_component + ss_component, 1.0), 10.0), 1
+            )
+
             alert = Alert(
                 ticker=ticker,
-                direction=snap.technical.direction,
-                entry=snap.technical.entry,
-                stop_loss=snap.technical.stop_loss,
-                take_profit=snap.technical.take_profit,
-                take_profit_1=snap.technical.take_profit_1,
-                take_profit_3=snap.technical.take_profit_3,
-                rsi=snap.technical.rsi,
+                direction=t.direction,
+                entry=entry,
+                stop_loss=t.stop_loss,
+                take_profit=t.take_profit,
+                take_profit_1=t.take_profit_1,
+                take_profit_3=t.take_profit_3,
+                rsi=t.rsi,
                 sentiment_score=score,
                 twitter_score=snap.sentiment.score if snap.sentiment else 0.0,
                 news_score=snap.news_sentiment.score if snap.news_sentiment else 0.0,
                 rss_score=snap.rss_sentiment.score if snap.rss_sentiment else 0.0,
-                confluence_factors=snap.technical.confluence_factors,
-                horizon=snap.technical.horizon,
-                horizon_reason=snap.technical.horizon_reason,
+                confluence_factors=t.confluence_factors,
+                horizon=t.horizon,
+                horizon_reason=t.horizon_reason,
                 chart_path=chart_path,
+                # Expert Tier
+                institutional_score=institutional_score,
+                pct_sl=_pct(t.stop_loss),
+                pct_tp1=_pct(t.take_profit_1),
+                pct_tp2=_pct(t.take_profit),
+                pct_tp3=_pct(t.take_profit_3),
+                vwap=t.vwap,
+                poc_price=t.poc_price,
+                fib_618=t.fib_618,
+                golden_cross=t.golden_cross,
+                rsi_divergence=t.rsi_divergence,
+                pivot_r1=t.pivot_r1,
+                pivot_r2=t.pivot_r2,
+                pivot_s1=t.pivot_s1,
+                pivot_s2=t.pivot_s2,
             )
 
             message_id = await send_alert(

@@ -100,8 +100,12 @@ def test_compute_signals_raises_on_short_dataframe():
         compute_signals("NVDA", df)
 
 
-from stock_sentinel.analyzer import _detect_candlestick_pattern, _compute_technical_score
-from stock_sentinel.analyzer import _classify_horizon, _build_horizon_reason
+from stock_sentinel.analyzer import (
+    _detect_candlestick_pattern, _compute_technical_score,
+    _classify_horizon, _build_horizon_reason,
+    _compute_pivot_points, _detect_rsi_divergence,
+    _compute_poc, _compute_fibonacci,
+)
 
 
 def test_compute_signals_has_new_fields():
@@ -254,3 +258,139 @@ def test_compute_signals_horizon_field_present():
     assert isinstance(result.adx_strong, bool)
     assert isinstance(result.obv_rising, bool)
     assert isinstance(result.stochrsi_crossover, bool)
+
+
+# ── Task 16: Expert Tier tests ────────────────────────────────────────────────
+
+def test_compute_pivot_points_basic():
+    """Pivot R1 > S1 for any non-degenerate bar."""
+    df = _mock_df()
+    r1, r2, s1, s2 = _compute_pivot_points(df)
+    assert r1 > s1
+    assert r2 >= r1
+    assert s2 <= s1
+
+
+def test_compute_pivot_points_too_short():
+    """DataFrame with fewer than 2 rows returns all zeros."""
+    df = _mock_df(rows=1)
+    assert _compute_pivot_points(df) == (0.0, 0.0, 0.0, 0.0)
+
+
+def test_detect_rsi_divergence_no_divergence_flat():
+    """Flat RSI and flat price produces no divergence."""
+    df = _mock_df(rows=60)
+    df["Close"] = 100.0
+    df["RSI_14"] = 50.0
+    result = _detect_rsi_divergence(df)
+    assert result == ""
+
+
+def test_detect_rsi_divergence_bullish():
+    """Price makes lower low while RSI makes higher low → bullish divergence."""
+    df = _mock_df(rows=60)
+    periods = 14
+    window_start = len(df) - periods - 1
+    half = periods // 2
+    # First half: price low = 90, RSI low = 30
+    # Second half: price low = 85 (lower), RSI low = 35 (higher)
+    close_vals = df["Close"].values.copy()
+    rsi_vals = np.ones(len(df)) * 50.0
+    # Set the first-half minimum
+    close_vals[window_start + 2] = 90.0
+    rsi_vals[window_start + 2] = 30.0
+    # Set the second-half minimum (lower close, higher RSI)
+    close_vals[window_start + half + 2] = 85.0
+    rsi_vals[window_start + half + 2] = 35.0
+    df["Close"] = close_vals
+    df["RSI_14"] = rsi_vals
+    assert _detect_rsi_divergence(df) == "bullish"
+
+
+def test_detect_rsi_divergence_bearish():
+    """Price makes higher high while RSI makes lower high → bearish divergence."""
+    df = _mock_df(rows=60)
+    periods = 14
+    window_start = len(df) - periods - 1
+    half = periods // 2
+    close_vals = df["Close"].values.copy()
+    rsi_vals = np.ones(len(df)) * 50.0
+    # First half: price high = 110, RSI high = 70
+    close_vals[window_start + 2] = 110.0
+    rsi_vals[window_start + 2] = 70.0
+    # Second half: price high = 115 (higher), RSI high = 65 (lower)
+    close_vals[window_start + half + 2] = 115.0
+    rsi_vals[window_start + half + 2] = 65.0
+    df["Close"] = close_vals
+    df["RSI_14"] = rsi_vals
+    assert _detect_rsi_divergence(df) == "bearish"
+
+
+def test_detect_rsi_divergence_missing_col():
+    """No RSI_14 column → returns empty string, no crash."""
+    df = _mock_df(rows=60)
+    assert _detect_rsi_divergence(df) == ""
+
+
+def test_compute_poc_in_price_range():
+    """POC must be within the Close price range of the DataFrame."""
+    df = _mock_df(rows=60, base=100.0)
+    poc = _compute_poc(df)
+    assert df["Close"].min() <= poc <= df["Close"].max()
+
+
+def test_compute_poc_flat():
+    """All prices equal → POC equals that price."""
+    df = _mock_df(rows=60)
+    df["Close"] = 150.0
+    df["High"] = 151.0
+    df["Low"] = 149.0
+    poc = _compute_poc(df)
+    assert poc == 150.0
+
+
+def test_compute_fibonacci_golden_pocket_ordering():
+    """fib_618 > fib_65 (61.8% retraces less than 65.0%)."""
+    df = _mock_df(rows=60)
+    fib_618, fib_65 = _compute_fibonacci(df)
+    assert fib_618 > 0.0
+    assert fib_65 > 0.0
+    assert fib_618 > fib_65
+
+
+def test_compute_fibonacci_within_range():
+    """Both Fibonacci levels must be within the lookback high/low range."""
+    df = _mock_df(rows=60)
+    fib_618, fib_65 = _compute_fibonacci(df, lookback=20)
+    window = df.tail(20)
+    lo, hi = float(window["Low"].min()), float(window["High"].max())
+    assert lo <= fib_65 <= hi
+    assert lo <= fib_618 <= hi
+
+
+def test_compute_signals_expert_fields_present():
+    """All Task 16 TechnicalSignal fields are populated with valid types."""
+    result = compute_signals("NVDA", _mock_df())
+    assert isinstance(result.pivot_r1, float)
+    assert isinstance(result.pivot_r2, float)
+    assert isinstance(result.pivot_s1, float)
+    assert isinstance(result.pivot_s2, float)
+    assert result.rsi_divergence in ("bullish", "bearish", "")
+    assert isinstance(result.poc_price, float) and result.poc_price > 0
+    assert isinstance(result.golden_cross, bool)
+    assert isinstance(result.fib_618, float)
+    assert isinstance(result.fib_65, float)
+    # Pivots: R1 should be > S1 for normal data
+    if result.pivot_r1 > 0 and result.pivot_s1 > 0:
+        assert result.pivot_r1 > result.pivot_s1
+
+
+def test_golden_cross_detected():
+    """golden_cross=True when MA50 > EMA200."""
+    df = _mock_df(rows=60)
+    df["SMA_50"] = 120.0   # SMA50 above EMA200
+    df["EMA_200"] = 100.0
+    result = compute_signals("NVDA", df)
+    # golden_cross checks ma_50 (computed SMA50) vs ema_200 (computed EMA200)
+    # When pre-injected, the assertion must hold on the injected values
+    assert result.golden_cross == (result.ma_50 > 0 and result.ema_200 > 0 and result.ma_50 > result.ema_200)

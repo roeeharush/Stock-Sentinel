@@ -1,3 +1,4 @@
+import numpy as np
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
@@ -195,6 +196,92 @@ def _build_horizon_reason(
     return ""
 
 
+def _compute_pivot_points(df: pd.DataFrame) -> tuple[float, float, float, float]:
+    """Standard floor pivot points using the previous bar's High / Low / Close.
+
+    Returns (R1, R2, S1, S2).
+    """
+    if len(df) < 2:
+        return 0.0, 0.0, 0.0, 0.0
+    prev = df.iloc[-2]
+    h, l, c = float(prev["High"]), float(prev["Low"]), float(prev["Close"])
+    pivot = (h + l + c) / 3.0
+    r1 = round(2.0 * pivot - l, 2)
+    r2 = round(pivot + (h - l), 2)
+    s1 = round(2.0 * pivot - h, 2)
+    s2 = round(pivot - (h - l), 2)
+    return r1, r2, s1, s2
+
+
+def _detect_rsi_divergence(df: pd.DataFrame, periods: int = 14) -> str:
+    """Detect RSI divergence over the last *periods* bars (excluding the live bar).
+
+    Bullish divergence: price makes a lower low but RSI makes a higher low.
+    Bearish divergence: price makes a higher high but RSI makes a lower high.
+    Returns 'bullish', 'bearish', or ''.
+    """
+    rsi_col = "RSI_14"
+    if rsi_col not in df.columns or len(df) < periods + 2:
+        return ""
+
+    window = df.iloc[-(periods + 1):-1]       # *periods* complete bars
+    close_vals = window["Close"].values.astype(float)
+    rsi_vals   = window[rsi_col].values.astype(float)
+
+    if np.isnan(rsi_vals).any():
+        return ""
+
+    half = periods // 2
+    first_close, second_close = close_vals[:half], close_vals[half:]
+    first_rsi,   second_rsi   = rsi_vals[:half],   rsi_vals[half:]
+
+    # Bullish: lower price low, higher RSI low
+    if second_close.min() < first_close.min() and second_rsi.min() > first_rsi.min():
+        return "bullish"
+
+    # Bearish: higher price high, lower RSI high
+    if second_close.max() > first_close.max() and second_rsi.max() < first_rsi.max():
+        return "bearish"
+
+    return ""
+
+
+def _compute_poc(df: pd.DataFrame, bins: int = 20) -> float:
+    """Volume Profile — return the price at the Point of Control (highest-volume bin)."""
+    prices  = df["Close"].values.astype(float)
+    volumes = df["Volume"].values.astype(float)
+    p_min, p_max = prices.min(), prices.max()
+    if p_min >= p_max:
+        return round(float(prices[-1]), 2)
+
+    edges    = np.linspace(p_min, p_max, bins + 1)
+    bin_vols = np.zeros(bins)
+    for price, vol in zip(prices, volumes):
+        idx = min(int((price - p_min) / (p_max - p_min) * bins), bins - 1)
+        bin_vols[idx] += vol
+
+    poc_bin   = int(np.argmax(bin_vols))
+    poc_price = (edges[poc_bin] + edges[poc_bin + 1]) / 2.0
+    return round(float(poc_price), 2)
+
+
+def _compute_fibonacci(df: pd.DataFrame, lookback: int = 20) -> tuple[float, float]:
+    """Fibonacci Golden Pocket retracement levels (61.8% and 65.0%).
+
+    Measures swing high / low over the last *lookback* bars.
+    Returns (fib_618, fib_65).  Both are 0.0 if swing is zero.
+    """
+    window = df.tail(lookback)
+    high   = float(window["High"].max())
+    low    = float(window["Low"].min())
+    swing  = high - low
+    if swing <= 0:
+        return 0.0, 0.0
+    fib_618 = round(high - 0.618 * swing, 2)
+    fib_65  = round(high - 0.650 * swing, 2)
+    return fib_618, fib_65
+
+
 def compute_signals(ticker: str, df: pd.DataFrame) -> TechnicalSignal:
     """Compute all technical indicators and return a fully-populated TechnicalSignal."""
     df = df.copy()
@@ -367,6 +454,21 @@ def compute_signals(ticker: str, df: pd.DataFrame) -> TechnicalSignal:
         ema_200_above, adx_strong, obv_rising,
     )
 
+    # ── Task 16: Expert Tier indicators ────────────────────────────────────────
+    pivot_r1, pivot_r2, pivot_s1, pivot_s2 = _compute_pivot_points(df)
+    rsi_divergence = _detect_rsi_divergence(df)
+    poc_price      = _compute_poc(df)
+    fib_618, fib_65 = _compute_fibonacci(df)
+    golden_cross   = (ma_50 > 0 and ema_200 > 0 and ma_50 > ema_200)
+
+    # Append Expert Tier signals as informational confluence factors
+    if golden_cross:
+        confluence_factors.append("Golden Cross")
+    if rsi_divergence == "bullish":
+        confluence_factors.append("Bullish Divergence")
+    elif rsi_divergence == "bearish":
+        confluence_factors.append("Bearish Divergence")
+
     return TechnicalSignal(
         ticker=ticker,
         rsi=rsi,
@@ -393,4 +495,13 @@ def compute_signals(ticker: str, df: pd.DataFrame) -> TechnicalSignal:
         obv_rising=obv_rising,
         horizon=horizon,
         horizon_reason=horizon_reason,
+        pivot_r1=pivot_r1,
+        pivot_r2=pivot_r2,
+        pivot_s1=pivot_s1,
+        pivot_s2=pivot_s2,
+        rsi_divergence=rsi_divergence,
+        poc_price=poc_price,
+        golden_cross=golden_cross,
+        fib_618=fib_618,
+        fib_65=fib_65,
     )

@@ -2,6 +2,17 @@ import re
 from deep_translator import GoogleTranslator
 
 TRADING_GLOSSARY: dict[str, str] = {
+    # Expert Tier — Task 16
+    "Bullish Divergence": "דיברגנס שורי (RSI)",
+    "Bearish Divergence": "דיברגנס דובי (RSI)",
+    "RSI Divergence": "דיברגנס RSI",
+    "Divergence": "דיברגנס",
+    "Point of Control": "נקודת שליטה (POC)",
+    "Golden Cross": "חצייה זהובה (Golden Cross)",
+    "Golden Pocket": "כיס הזהב (פיבונאצ'י 0.618–0.65)",
+    "Fibonacci": "פיבונאצ'י",
+    "Pivot Point": "נקודת ציר",
+    "Institutional": "מוסדי",
     # Price Action
     "Gap Up": "פתיחה בפער עולה",
     "Gap Down": "פתיחה בפער יורד",

@@ -5,6 +5,7 @@ import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from stock_sentinel.notifier import build_message, generate_chart, send_alert, build_daily_report, send_daily_report
+from stock_sentinel.visualizer import generate_chart as visualizer_generate_chart
 from stock_sentinel.models import Alert, TechnicalSignal
 
 
@@ -39,11 +40,13 @@ def test_build_message_contains_required_fields():
     alert, headlines = _alert()
     with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
         msg = build_message(alert, headlines)
-    # ticker and numeric values must appear
-    for fragment in ["NVDA", "810", "792", "846", "RSI", "0.54", "0.60", "0.50"]:
+    # Ticker and price levels must appear
+    for fragment in ["NVDA", "810", "792", "846", "RSI"]:
         assert fragment in msg, f"Missing '{fragment}' in message"
-    # Hebrew direction words must appear
+    # Direction must appear
     assert "קניה" in msg or "LONG" in msg
+    # New format: percentage markers must appear
+    assert "%" in msg
 
 
 def test_build_message_contains_headlines():
@@ -60,7 +63,7 @@ def test_build_message_no_headlines():
         msg = build_message(alert, [])
     assert "NVDA" in msg
     assert "RSI" in msg
-    assert "0.54" in msg
+    assert "%" in msg
     assert "Top Headlines" not in msg
 
 
@@ -121,7 +124,6 @@ def test_build_daily_report_with_stats():
 
 
 def test_build_message_horizon_section():
-    alert, headlines = _alert()
     alert_with_horizon = Alert(
         ticker="NVDA", direction="LONG", entry=810.0,
         stop_loss=792.0, take_profit=846.0, rsi=27.0,
@@ -133,7 +135,8 @@ def test_build_message_horizon_section():
     with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
         msg = build_message(alert_with_horizon, [])
     assert "טווח קצר" in msg
-    assert "הסבר האסטרטגיה" in msg
+    # New format: "ניתוח אנליסט" section (fallback to horizon_reason)
+    assert "ניתוח אנליסט" in msg
     assert "פריצת ווליום" in msg
 
 
@@ -189,3 +192,94 @@ async def test_send_trade_update_tp3_status():
         mock_instance.send_message = AsyncMock(return_value=MagicMock())
         await send_trade_update(trade, "TP3", 945.0, "token", "chat")
     assert "מקסימלי" in mock_instance.send_message.call_args.kwargs["text"]
+
+
+# ── Task 16: Expert Tier notifier tests ──────────────────────────────────────
+
+def test_build_message_institutional_score():
+    """When institutional_score is set it appears in the message as X/10."""
+    alert, _ = _alert()
+    alert_with_score = Alert(
+        ticker="NVDA", direction="LONG", entry=810.0,
+        stop_loss=792.0, take_profit=846.0, rsi=27.0,
+        sentiment_score=0.54,
+        institutional_score=8.5,
+    )
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert_with_score, [])
+    assert "8.5/10" in msg
+    assert "סנטימנט מוסדי חזק" in msg
+
+
+def test_build_message_pct_targets():
+    """Percentage change values appear in the trade level section."""
+    alert_pct = Alert(
+        ticker="NVDA", direction="LONG", entry=200.0,
+        stop_loss=190.0, take_profit=220.0, rsi=27.0,
+        sentiment_score=0.5,
+        take_profit_1=210.0, take_profit_3=240.0,
+        pct_sl=-5.0, pct_tp1=5.0, pct_tp2=10.0, pct_tp3=20.0,
+    )
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert_pct, [])
+    assert "-5.0%" in msg
+    assert "+5.0%" in msg
+    assert "+10.0%" in msg
+    assert "+20.0%" in msg
+
+
+def test_build_message_pivot_levels():
+    """Pivot R1/R2/S1/S2 appear in the technical metrics section."""
+    alert_piv = Alert(
+        ticker="NVDA", direction="LONG", entry=810.0,
+        stop_loss=792.0, take_profit=846.0, rsi=27.0,
+        sentiment_score=0.5,
+        pivot_r1=820.0, pivot_r2=835.0, pivot_s1=800.0, pivot_s2=785.0,
+    )
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert_piv, [])
+    assert "820.00" in msg
+    assert "800.00" in msg
+
+
+def test_build_message_rsi_divergence():
+    """RSI bullish divergence label appears in the message."""
+    alert_div = Alert(
+        ticker="NVDA", direction="LONG", entry=810.0,
+        stop_loss=792.0, take_profit=846.0, rsi=27.0,
+        sentiment_score=0.5,
+        rsi_divergence="bullish",
+    )
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert_div, [])
+    assert "דיברגנס שורי" in msg
+
+
+def test_build_message_analyst_summary_vwap():
+    """Analyst summary includes VWAP reference when close to entry."""
+    alert_vwap = Alert(
+        ticker="NVDA", direction="LONG", entry=810.0,
+        stop_loss=792.0, take_profit=846.0, rsi=27.0,
+        sentiment_score=0.5,
+        vwap=808.0,  # within 0.25% of entry — triggers the summary
+    )
+    with patch("stock_sentinel.notifier.translate_to_hebrew", side_effect=lambda x: x):
+        msg = build_message(alert_vwap, [])
+    assert "VWAP" in msg
+    assert "ניתוח אנליסט" in msg
+
+
+def test_visualizer_generate_chart_creates_png():
+    """visualizer.generate_chart produces a valid PNG file."""
+    from stock_sentinel.models import TechnicalSignal
+    sig = TechnicalSignal(
+        ticker="NVDA", rsi=27.0, ma_20=800.0, ma_50=780.0, atr=12.0,
+        entry=810.0, stop_loss=792.0, take_profit=846.0,
+        direction="LONG", analyzed_at=datetime.now(timezone.utc),
+        take_profit_1=828.0, take_profit_3=870.0,
+        fib_618=805.0, fib_65=802.0, poc_price=807.0,
+    )
+    path = visualizer_generate_chart("NVDA", _df(), sig)
+    assert os.path.exists(path)
+    assert path.endswith(".png")
+    os.remove(path)
