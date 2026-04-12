@@ -75,6 +75,21 @@ class TechnicalSignal:
     risk_reward: float = 0.0         # (TP1 - entry) / (entry - SL), pre-computed
 
 @dataclass
+class NewsFlash:
+    """A single high-impact news item surfaced by the News Catalyst Engine."""
+    ticker: str
+    title: str                  # original headline
+    summary: str                # 1-2 sentence summary (may equal title if no body)
+    url: str                    # direct link to the article
+    source: str                 # publisher / feed name
+    sentiment_score: float      # -1.0 to +1.0
+    catalyst_keywords: list[str] = field(default_factory=list)  # matched keywords
+    reaction: str = ""          # "bullish" | "bearish"
+    published_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    item_id: str = ""           # de-duplication key (url or guid)
+
+
+@dataclass
 class ScannerCandidate:
     """A ticker surfaced by the autonomous market scanner."""
     ticker: str

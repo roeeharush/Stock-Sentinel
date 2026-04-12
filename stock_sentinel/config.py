@@ -43,6 +43,26 @@ SCORE_WEIGHT_RSI: int = 20
 SCORE_WEIGHT_MACD: int = 15
 
 
+# ── Task 19: News Catalyst Engine ─────────────────────────────────────────────
+NEWS_ENGINE_POLL_MINUTES: int = 5          # how often to poll for breaking news
+NEWS_SENTIMENT_THRESHOLD: float = 0.55    # |score| must exceed this to qualify as polarized
+NEWS_CATALYST_KEYWORDS: list[str] = [
+    # Corporate events
+    "merger", "acquisition", "takeover", "buyout", "spinoff", "ipo",
+    # Earnings / guidance
+    "earnings", "revenue", "guidance", "beat", "miss", "outlook", "forecast",
+    # Analyst actions
+    "upgrade", "downgrade", "price target", "overweight", "underweight",
+    # Regulatory / legal
+    "fda", "approval", "lawsuit", "settlement", "sec", "investigation", "fine",
+    # Dividends / buybacks
+    "dividend", "buyback", "repurchase",
+    # Product / innovation
+    "breakthrough", "launch", "contract", "partnership", "deal",
+    # Macro / crisis
+    "bankruptcy", "default", "recall", "layoffs", "restructuring",
+]
+
 # ── Task 17.2: Autonomous Hunter ──────────────────────────────────────────────
 SCANNER_MIN_MARKET_CAP: float = 2e9     # 2 B minimum
 SCANNER_MIN_VOLUME: int       = 1_000_000

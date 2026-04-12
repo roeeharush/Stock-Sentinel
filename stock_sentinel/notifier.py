@@ -3,7 +3,7 @@ import asyncio
 from datetime import datetime, timezone
 from telegram import Bot
 from telegram.error import TelegramError
-from stock_sentinel.models import Alert
+from stock_sentinel.models import Alert, NewsFlash
 from stock_sentinel.translator import translate_to_hebrew
 from stock_sentinel.visualizer import generate_chart  # re-export for backward compat
 
@@ -11,7 +11,8 @@ log = logging.getLogger(__name__)
 
 # ── re-export so scheduler.py import stays unchanged ─────────────────────────
 __all__ = ["build_message", "generate_chart", "send_alert",
-           "build_daily_report", "send_daily_report", "send_trade_update"]
+           "build_daily_report", "send_daily_report", "send_trade_update",
+           "build_news_flash_message", "send_news_flash"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -255,6 +256,56 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
         f"⏰ _{datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC_",
     ]
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# News Flash (Task 19)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_news_flash_message(flash: NewsFlash) -> str:
+    """Build Hebrew Telegram message for a breaking news flash."""
+    if flash.reaction == "bullish":
+        reaction_icon  = "🚀"
+        reaction_label = "תגובה צפויה: עלייה חזקה"
+    else:
+        reaction_icon  = "⚠️"
+        reaction_label = "סיכון: ירידה חדה צפויה"
+
+    keywords_str = ", ".join(flash.catalyst_keywords[:5]) if flash.catalyst_keywords else "חדשות מהותיות"
+
+    lines = [
+        f"📢 *מבזק חדשות מתפרצות — {flash.ticker}*",
+        "",
+        f"📰 *כותרת:* {flash.title}",
+        "",
+        f"📋 *סיכום:* {flash.summary}",
+        "",
+        f"{reaction_icon} *{reaction_label}*",
+        f"🔑 *מילות מפתח:* {keywords_str}",
+    ]
+
+    if flash.url:
+        lines += ["", f"🔗 [מקור: {flash.source}]({flash.url})"]
+    else:
+        lines += ["", f"📡 מקור: {flash.source}"]
+
+    lines += [
+        "",
+        f"⏰ _{flash.published_at.strftime('%d/%m/%Y %H:%M')} UTC_",
+    ]
+    return "\n".join(lines)
+
+
+async def send_news_flash(flash: NewsFlash, bot_token: str, chat_id: str) -> bool:
+    """Send a breaking news flash via Telegram. Returns True on success."""
+    bot  = Bot(token=bot_token)
+    text = build_news_flash_message(flash)
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        return True
+    except TelegramError as exc:
+        log.warning("send_news_flash failed for %s: %s", flash.ticker, exc)
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

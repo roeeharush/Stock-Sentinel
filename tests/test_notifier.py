@@ -4,9 +4,13 @@ import pandas as pd
 import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-from stock_sentinel.notifier import build_message, generate_chart, send_alert, build_daily_report, send_daily_report
+from stock_sentinel.notifier import (
+    build_message, generate_chart, send_alert,
+    build_daily_report, send_daily_report,
+    build_news_flash_message, send_news_flash,
+)
 from stock_sentinel.visualizer import generate_chart as visualizer_generate_chart
-from stock_sentinel.models import Alert, TechnicalSignal
+from stock_sentinel.models import Alert, NewsFlash, TechnicalSignal
 
 
 def _signal():
@@ -337,3 +341,98 @@ def test_visualizer_generate_chart_creates_png():
     assert os.path.exists(path)
     assert path.endswith(".png")
     os.remove(path)
+
+
+# ── Task 19: News Flash notifier tests ───────────────────────────────────────
+
+def _flash(reaction="bullish", url="https://example.com/story"):
+    return NewsFlash(
+        ticker="NVDA",
+        title="NVDA beats earnings with strong rally",
+        summary="NVDA beats earnings. מגמה עולה עם RSI 42 ואיתות LONG.",
+        url=url,
+        source="Reuters",
+        sentiment_score=0.8,
+        catalyst_keywords=["earnings", "beat"],
+        reaction=reaction,
+        published_at=datetime(2025, 1, 15, 14, 30, tzinfo=timezone.utc),
+        item_id="test-001",
+    )
+
+
+def test_build_news_flash_message_bullish_header():
+    msg = build_news_flash_message(_flash("bullish"))
+    assert "📢" in msg
+    assert "מבזק חדשות מתפרצות" in msg
+    assert "NVDA" in msg
+
+
+def test_build_news_flash_message_bullish_reaction():
+    msg = build_news_flash_message(_flash("bullish"))
+    assert "🚀" in msg
+    assert "עלייה חזקה" in msg
+
+
+def test_build_news_flash_message_bearish_reaction():
+    flash = _flash("bearish")
+    flash.sentiment_score = -0.8
+    msg = build_news_flash_message(flash)
+    assert "⚠️" in msg
+    assert "ירידה חדה" in msg
+
+
+def test_build_news_flash_message_contains_title():
+    msg = build_news_flash_message(_flash())
+    assert "NVDA beats earnings" in msg
+
+
+def test_build_news_flash_message_contains_summary():
+    msg = build_news_flash_message(_flash())
+    assert "מגמה עולה" in msg
+
+
+def test_build_news_flash_message_contains_keywords():
+    msg = build_news_flash_message(_flash())
+    assert "earnings" in msg
+
+
+def test_build_news_flash_message_contains_source_link():
+    msg = build_news_flash_message(_flash(url="https://example.com/story"))
+    assert "Reuters" in msg
+    assert "https://example.com/story" in msg
+
+
+def test_build_news_flash_message_no_url_shows_source():
+    flash = _flash(url="")
+    msg = build_news_flash_message(flash)
+    assert "Reuters" in msg
+
+
+def test_build_news_flash_message_timestamp():
+    msg = build_news_flash_message(_flash())
+    assert "15/01/2025" in msg
+
+
+@pytest.mark.asyncio
+async def test_send_news_flash_success():
+    flash = _flash()
+    with patch("stock_sentinel.notifier.Bot") as MockBot:
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(return_value=MagicMock())
+        result = await send_news_flash(flash, "fake_token", "fake_chat")
+    assert result is True
+    call_kwargs = mock_instance.send_message.call_args.kwargs
+    assert "מבזק חדשות" in call_kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_send_news_flash_failure_returns_false():
+    from telegram.error import TelegramError
+    flash = _flash()
+    with patch("stock_sentinel.notifier.Bot") as MockBot:
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(side_effect=TelegramError("fail"))
+        result = await send_news_flash(flash, "fake_token", "fake_chat")
+    assert result is False

@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timezone
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from stock_sentinel import config
 from stock_sentinel.config import validate_secrets
@@ -12,7 +13,7 @@ from stock_sentinel.scraper import init_browser, scrape_sentiment, close_browser
 from stock_sentinel.news_scraper import fetch_news_sentiment
 from stock_sentinel.rss_provider import fetch_rss_sentiment
 from stock_sentinel.signal_filter import combined_sentiment_score, should_alert, update_cooldown
-from stock_sentinel.notifier import generate_chart, send_alert, send_daily_report
+from stock_sentinel.notifier import generate_chart, send_alert, send_daily_report, send_news_flash
 from stock_sentinel.db import init_db, log_alert, get_daily_stats
 from stock_sentinel.monitor import check_active_trades
 from stock_sentinel.validator import validate_daily
@@ -22,6 +23,7 @@ from stock_sentinel.scanner import (
     filter_candidates,
 )
 from stock_sentinel.signal_filter import combined_sentiment_score as _css
+from stock_sentinel.news_engine import NewsEngineState, run_news_engine_cycle
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -316,11 +318,35 @@ def run_scanner(scanner_state: ScannerCooldownTracker) -> None:
         log.error("Scanner cycle failed: %s", exc)
 
 
+async def _async_news_engine_cycle(news_state: NewsEngineState) -> None:
+    """Fetch breaking news, filter by catalyst + polarization, send Telegram flashes."""
+    flashes = await run_news_engine_cycle(config.WATCHLIST, news_state)
+    for flash in flashes:
+        try:
+            sent = await send_news_flash(flash, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
+            if sent:
+                log.info(
+                    "News flash sent: %s — %s [%s]",
+                    flash.ticker, flash.reaction, ", ".join(flash.catalyst_keywords[:3]),
+                )
+        except Exception as exc:
+            log.error("News flash dispatch failed for %s: %s", flash.ticker, exc)
+
+
+def run_news_engine(news_state: NewsEngineState) -> None:
+    """Synchronous APScheduler entry point for the real-time news catalyst engine."""
+    try:
+        asyncio.run(_async_news_engine_cycle(news_state))
+    except Exception as exc:
+        log.error("News engine cycle failed: %s", exc)
+
+
 def main() -> None:
     validate_secrets()
     init_db()
     state: dict[str, TickerSnapshot] = {}
     scanner_state = ScannerCooldownTracker()
+    news_state    = NewsEngineState()
     scheduler = BlockingScheduler(timezone="America/New_York")
 
     # Intraday monitoring: every 15 min, 9:00–15:45 ET, Mon–Fri
@@ -378,6 +404,16 @@ def main() -> None:
             timezone="America/New_York",
         ),
         args=[scanner_state],
+    )
+
+    # Real-time News Catalyst Engine: every 5 minutes, 9:00–16:00 ET, Mon–Fri
+    scheduler.add_job(
+        run_news_engine,
+        IntervalTrigger(
+            minutes=config.NEWS_ENGINE_POLL_MINUTES,
+            timezone="America/New_York",
+        ),
+        args=[news_state],
     )
 
     log.info("Stock Sentinel started. Watching: %s", ", ".join(config.WATCHLIST))
