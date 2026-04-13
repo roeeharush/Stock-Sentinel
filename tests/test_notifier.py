@@ -9,9 +9,11 @@ from stock_sentinel.notifier import (
     build_daily_report, send_daily_report,
     build_news_flash_message, send_news_flash,
     build_macro_flash_message, send_macro_flash,
+    build_smart_money_message, send_smart_money_alert,
+    build_learning_report_message, send_learning_report,
 )
 from stock_sentinel.visualizer import generate_chart as visualizer_generate_chart
-from stock_sentinel.models import Alert, MacroFlash, NewsFlash, TechnicalSignal
+from stock_sentinel.models import Alert, InsiderAlert, LearningReport, MacroFlash, NewsFlash, OptionsFlowAlert, PatternFinding, TechnicalSignal
 
 
 def _signal():
@@ -173,6 +175,7 @@ async def test_send_trade_update_sl():
     call_kwargs = mock_instance.send_message.call_args.kwargs
     assert call_kwargs.get("reply_to_message_id") == 42
     assert "סטופ" in call_kwargs["text"]
+    assert "⏰" in call_kwargs["text"]
 
 
 @pytest.mark.asyncio
@@ -185,7 +188,9 @@ async def test_send_trade_update_tp1():
         result = await send_trade_update(trade, "TP1", 913.5, "token", "chat")
     assert result is True
     assert "reply_to_message_id" not in mock_instance.send_message.call_args.kwargs
-    assert "יעד 1" in mock_instance.send_message.call_args.kwargs["text"]
+    text = mock_instance.send_message.call_args.kwargs["text"]
+    assert "יעד 1" in text
+    assert "⏰" in text
 
 
 @pytest.mark.asyncio
@@ -196,7 +201,9 @@ async def test_send_trade_update_tp3_status():
         MockBot.return_value = mock_instance
         mock_instance.send_message = AsyncMock(return_value=MagicMock())
         await send_trade_update(trade, "TP3", 945.0, "token", "chat")
-    assert "מקסימלי" in mock_instance.send_message.call_args.kwargs["text"]
+    text = mock_instance.send_message.call_args.kwargs["text"]
+    assert "מקסימלי" in text
+    assert "⏰" in text
 
 
 # ── Task 16: Expert Tier notifier tests ──────────────────────────────────────
@@ -364,22 +371,24 @@ def _flash(reaction="bullish", url="https://example.com/story"):
 def test_build_news_flash_message_bullish_header():
     msg = build_news_flash_message(_flash("bullish"))
     assert "📢" in msg
-    assert "מבזק חדשות מתפרצות" in msg
+    assert "מבזק חדשות" in msg
     assert "NVDA" in msg
 
 
 def test_build_news_flash_message_bullish_reaction():
     msg = build_news_flash_message(_flash("bullish"))
-    assert "🚀" in msg
-    assert "עלייה חזקה" in msg
+    assert "💡" in msg
+    assert "📝" in msg
+    assert "מבזק חדשות" in msg
 
 
 def test_build_news_flash_message_bearish_reaction():
     flash = _flash("bearish")
     flash.sentiment_score = -0.8
     msg = build_news_flash_message(flash)
-    assert "⚠️" in msg
-    assert "ירידה חדה" in msg
+    assert "💡" in msg
+    assert "📝" in msg
+    assert "מבזק חדשות" in msg
 
 
 def test_build_news_flash_message_contains_title():
@@ -392,15 +401,17 @@ def test_build_news_flash_message_contains_summary():
     assert "מגמה עולה" in msg
 
 
-def test_build_news_flash_message_contains_keywords():
+def test_build_news_flash_message_no_keywords_row():
+    """Keywords row must NOT appear in the message (Task 24.1 de-clutter)."""
     msg = build_news_flash_message(_flash())
-    assert "earnings" in msg
+    assert "מילות מפתח" not in msg
+    assert "תגובה צפויה" not in msg
 
 
 def test_build_news_flash_message_contains_source_link():
+    # URL row removed — source name now appears in parentheses inside the summary
     msg = build_news_flash_message(_flash(url="https://example.com/story"))
-    assert "Reuters" in msg
-    assert "https://example.com/story" in msg
+    assert "Reuters" in msg   # source name embedded in summary
 
 
 def test_build_news_flash_message_discovery_header():
@@ -414,10 +425,10 @@ def test_build_news_flash_message_discovery_header():
 
 
 def test_build_news_flash_message_watchlist_header_default():
-    """Default is_watchlist=True produces 📢 מבזק header."""
+    """Default is_watchlist=True produces 📢 מבזק חדשות header."""
     msg = build_news_flash_message(_flash())
     assert "📢" in msg
-    assert "מבזק חדשות מתפרצות" in msg
+    assert "מבזק חדשות" in msg
 
 
 def test_build_news_flash_message_no_url_shows_source():
@@ -484,8 +495,8 @@ def test_build_macro_flash_message_header():
 def test_build_macro_flash_message_bearish_sentiment():
     msg = build_macro_flash_message(_macro_flash("bearish"))
     assert "📉" in msg
-    assert "Bearish" in msg
-    assert "Risk-Off" in msg
+    assert "שלילי" in msg    # Hebrew-only labels (Task 25)
+    assert "Risk-Off" in msg  # kept in parentheses for clarity
 
 
 def test_build_macro_flash_message_bullish_sentiment():
@@ -493,8 +504,8 @@ def test_build_macro_flash_message_bullish_sentiment():
     mf.sentiment_score = 0.8
     msg = build_macro_flash_message(mf)
     assert "📈" in msg
-    assert "Bullish" in msg
-    assert "Risk-On" in msg
+    assert "חיובי" in msg    # Hebrew-only labels (Task 25)
+    assert "Risk-On" in msg   # kept in parentheses for clarity
 
 
 def test_build_macro_flash_message_contains_title():
@@ -520,9 +531,9 @@ def test_build_macro_flash_message_contains_affected_assets():
 
 
 def test_build_macro_flash_message_contains_source_link():
+    # URL row removed — source name now appears in parentheses after the title
     msg = build_macro_flash_message(_macro_flash(url="https://reuters.com/macro/1"))
-    assert "Reuters" in msg
-    assert "https://reuters.com/macro/1" in msg
+    assert "Reuters" in msg   # source name embedded in title
 
 
 def test_build_macro_flash_message_no_url_shows_source():
@@ -558,4 +569,245 @@ async def test_send_macro_flash_failure_returns_false():
         MockBot.return_value = mock_instance
         mock_instance.send_message = AsyncMock(side_effect=TelegramError("fail"))
         result = await send_macro_flash(mf, "fake_token", "fake_chat")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Smart Money Alert (Task 25)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _insider_alert(**kwargs) -> InsiderAlert:
+    defaults = dict(
+        ticker="NVDA",
+        insider_name="Jensen Huang",
+        position="CEO",
+        shares=10_000,
+        value=1_500_000,
+        transaction_date=datetime(2025, 3, 10, tzinfo=timezone.utc),
+    )
+    defaults.update(kwargs)
+    return InsiderAlert(**defaults)
+
+
+def _options_alert(**kwargs) -> OptionsFlowAlert:
+    defaults = dict(
+        ticker="NVDA",
+        expiry="2025-05-16",
+        strike=130.0,
+        option_type="CALL",
+        volume=5000,
+        open_interest=800,
+        volume_oi_ratio=6.25,
+    )
+    defaults.update(kwargs)
+    return OptionsFlowAlert(**defaults)
+
+
+def test_build_smart_money_message_insider_header():
+    msg = build_smart_money_message(_insider_alert())
+    assert "🕵️" in msg
+    assert "כסף חכם" in msg
+
+
+def test_build_smart_money_message_insider_contains_ticker():
+    msg = build_smart_money_message(_insider_alert())
+    assert "NVDA" in msg
+
+
+def test_build_smart_money_message_insider_contains_name_and_position():
+    msg = build_smart_money_message(_insider_alert())
+    assert "Jensen Huang" in msg
+    assert "CEO" in msg
+
+
+def test_build_smart_money_message_insider_value_formatted():
+    msg = build_smart_money_message(_insider_alert(value=1_500_000))
+    assert "$1.50M" in msg
+
+
+def test_build_smart_money_message_insider_value_below_1m():
+    msg = build_smart_money_message(_insider_alert(value=500_000))
+    assert "$500,000" in msg
+
+
+def test_build_smart_money_message_insider_contains_timestamp():
+    msg = build_smart_money_message(_insider_alert())
+    assert "⏰" in msg
+
+
+def test_build_smart_money_message_options_header():
+    msg = build_smart_money_message(_options_alert())
+    assert "🕵️" in msg
+    assert "כסף חכם" in msg
+
+
+def test_build_smart_money_message_options_call_label():
+    msg = build_smart_money_message(_options_alert(option_type="CALL"))
+    assert "CALL" in msg
+    assert "עלייה" in msg
+
+
+def test_build_smart_money_message_options_put_label():
+    msg = build_smart_money_message(_options_alert(option_type="PUT"))
+    assert "PUT" in msg
+    assert "ירידה" in msg
+
+
+def test_build_smart_money_message_options_contains_strike_and_expiry():
+    msg = build_smart_money_message(_options_alert(strike=130.0, expiry="2025-05-16"))
+    assert "130" in msg
+    assert "2025-05-16" in msg
+
+
+def test_build_smart_money_message_options_contains_volume_ratio():
+    msg = build_smart_money_message(_options_alert(volume_oi_ratio=6.25))
+    assert "6.25" in msg or "6.2" in msg
+
+
+@pytest.mark.asyncio
+async def test_send_smart_money_alert_insider_success():
+    alert = _insider_alert()
+    with patch("stock_sentinel.notifier.Bot") as MockBot:
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(return_value=MagicMock())
+        result = await send_smart_money_alert(alert, "fake_token", "fake_chat")
+    assert result is True
+    call_kwargs = mock_instance.send_message.call_args.kwargs
+    assert "כסף חכם" in call_kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_send_smart_money_alert_options_success():
+    alert = _options_alert()
+    with patch("stock_sentinel.notifier.Bot") as MockBot:
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(return_value=MagicMock())
+        result = await send_smart_money_alert(alert, "fake_token", "fake_chat")
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_send_smart_money_alert_failure_returns_false():
+    from telegram.error import TelegramError
+    alert = _insider_alert()
+    with patch("stock_sentinel.notifier.Bot") as MockBot:
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(side_effect=TelegramError("fail"))
+        result = await send_smart_money_alert(alert, "fake_token", "fake_chat")
+    assert result is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Learning Report (Task 27)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _learning_report(**overrides) -> LearningReport:
+    base = dict(
+        analysis_date=datetime(2026, 4, 13, 18, 0, tzinfo=timezone.utc),
+        week_start=datetime(2026, 4, 6, 0, 0, tzinfo=timezone.utc),
+        week_end=datetime(2026, 4, 13, 18, 0, tzinfo=timezone.utc),
+        total_trades=12,
+        wins=7,
+        losses=5,
+        unresolved=2,
+        win_rate_before=7 / 12,
+        win_rate_after=0.714,
+        trades_filtered=4,
+        patterns=[
+            PatternFinding(
+                pattern_type="rsi_ceiling",
+                description_heb="RSI בין 75–100 בעסקאות LONG",
+                failure_rate=1.0,
+                sample_count=3,
+                failed_count=3,
+                action_heb="חסמתי עסקאות LONG עם RSI מעל 75 לשבוע הבא",
+                rsi_ceiling=75.0,
+            ),
+        ],
+        blocked_tickers=[],
+        blocked_hours=[],
+        blocked_days=[],
+        rsi_ceiling=75.0,
+    )
+    base.update(overrides)
+    return LearningReport(**base)
+
+
+def test_build_learning_report_header():
+    msg = build_learning_report_message(_learning_report())
+    assert "דוח למידה עצמית" in msg
+    assert "🤖" in msg
+
+
+def test_build_learning_report_contains_week_range():
+    msg = build_learning_report_message(_learning_report())
+    assert "06/04/2026" in msg
+    assert "13/04/2026" in msg
+
+
+def test_build_learning_report_stats_block():
+    msg = build_learning_report_message(_learning_report())
+    assert "12" in msg  # total trades
+    assert "58" in msg or "7" in msg  # win rate or wins
+
+
+def test_build_learning_report_shows_pattern():
+    msg = build_learning_report_message(_learning_report())
+    assert "RSI" in msg
+    assert "75" in msg
+
+
+def test_build_learning_report_shows_action():
+    msg = build_learning_report_message(_learning_report())
+    assert "חסמתי" in msg
+
+
+def test_build_learning_report_shows_projected_improvement():
+    msg = build_learning_report_message(_learning_report())
+    assert "71" in msg or "תחזית" in msg
+
+
+def test_build_learning_report_no_patterns():
+    report = _learning_report(patterns=[], trades_filtered=0, rsi_ceiling=None, win_rate_after=7 / 12)
+    msg = build_learning_report_message(report)
+    assert "לא זוהו אזורים רעילים" in msg
+
+
+def test_build_learning_report_no_trades():
+    report = _learning_report(total_trades=0, wins=0, losses=0, unresolved=3,
+                              win_rate_before=0.0, win_rate_after=0.0,
+                              trades_filtered=0, patterns=[])
+    msg = build_learning_report_message(report)
+    assert "אין עסקאות מוסכמות" in msg
+
+
+def test_build_learning_report_has_timestamp():
+    msg = build_learning_report_message(_learning_report())
+    assert "⏰" in msg
+
+
+@pytest.mark.asyncio
+async def test_send_learning_report_success():
+    report = _learning_report()
+    with patch("stock_sentinel.notifier.Bot") as MockBot:
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(return_value=MagicMock())
+        result = await send_learning_report(report, "fake_token", "fake_chat")
+    assert result is True
+    call_kwargs = mock_instance.send_message.call_args.kwargs
+    assert "למידה עצמית" in call_kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_send_learning_report_failure_returns_false():
+    from telegram.error import TelegramError
+    report = _learning_report()
+    with patch("stock_sentinel.notifier.Bot") as MockBot:
+        mock_instance = AsyncMock()
+        MockBot.return_value = mock_instance
+        mock_instance.send_message = AsyncMock(side_effect=TelegramError("fail"))
+        result = await send_learning_report(report, "fake_token", "fake_chat")
     assert result is False

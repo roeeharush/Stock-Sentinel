@@ -114,6 +114,6 @@ def generate_chart(ticker: str, df: pd.DataFrame, signal: TechnicalSignal) -> st
     for axis in axes:
         axis.set_facecolor("#131722")
 
-    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="#131722")
+    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor="#131722")
     plt.close(fig)
     return path

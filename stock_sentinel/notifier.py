@@ -1,19 +1,55 @@
 import logging
 import asyncio
+import os
 from datetime import datetime, timezone
 from telegram import Bot
 from telegram.error import TelegramError
-from stock_sentinel.models import Alert, MacroFlash, NewsFlash
+from stock_sentinel.models import Alert, DebateResult, InsiderAlert, LearningReport, MacroFlash, NewsFlash, OptionsFlowAlert
 from stock_sentinel.translator import translate_to_hebrew
 from stock_sentinel.visualizer import generate_chart  # re-export for backward compat
 
 log = logging.getLogger(__name__)
 
+
+# ── Israel Time helper ────────────────────────────────────────────────────────
+
+def _now_israel() -> datetime:
+    """Return current datetime in Israel Time (handles DST automatically)."""
+    try:
+        from zoneinfo import ZoneInfo  # Python 3.9+
+        return datetime.now(ZoneInfo("Asia/Jerusalem"))
+    except Exception:
+        from datetime import timedelta
+        # Fallback: IDT = UTC+3 (summer), IST = UTC+2 (winter).
+        # April through October is summer in Israel.
+        now_utc = datetime.now(timezone.utc)
+        offset  = timedelta(hours=3 if 4 <= now_utc.month <= 10 else 2)
+        return now_utc.astimezone(timezone(offset))
+
+
+def _israel_ts(dt: datetime | None = None) -> str:
+    """Formatted Israel timestamp: DD/MM/YYYY HH:MM."""
+    if dt is None:
+        t = _now_israel()
+    else:
+        try:
+            from zoneinfo import ZoneInfo
+            t = dt.astimezone(ZoneInfo("Asia/Jerusalem"))
+        except Exception:
+            from datetime import timedelta
+            now_utc = dt.astimezone(timezone.utc)
+            offset  = timedelta(hours=3 if 4 <= now_utc.month <= 10 else 2)
+            t = now_utc.astimezone(timezone(offset))
+    return t.strftime("%d/%m/%Y %H:%M")
+
 # ── re-export so scheduler.py import stays unchanged ─────────────────────────
 __all__ = ["build_message", "generate_chart", "send_alert",
            "build_daily_report", "send_daily_report", "send_trade_update",
            "build_news_flash_message", "send_news_flash",
-           "build_macro_flash_message", "send_macro_flash"]
+           "build_macro_flash_message", "send_macro_flash",
+           "build_smart_money_message", "send_smart_money_alert",
+           "build_debate_section",
+           "build_learning_report_message", "send_learning_report"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,7 +204,120 @@ def _build_ma_ribbon_summary(alert: Alert) -> str:
     return ". ".join(parts) + "."
 
 
-def build_message(alert: Alert, headlines: list[str]) -> str:
+def _build_trade_rationale(alert: Alert) -> str:
+    """1-2 sentence Hebrew trade rationale — the 'why now, why this direction'."""
+    direction_heb = "קנייה" if alert.direction == "LONG" else "מכירה בחסר"
+    horizon_map   = {
+        "SHORT_TERM": "סווינג קצר טווח",
+        "LONG_TERM":  "פוזיציה ארוכת טווח",
+        "BOTH":       "סווינג וגם פוזיציה",
+    }
+    horizon_heb = horizon_map.get(alert.horizon, "")
+
+    # Distil the strongest confluence signal into one sentence
+    factors = alert.confluence_factors or []
+    if alert.golden_cross:
+        tech_note = "חצייה Golden Cross מאשרת מגמת עלייה מוסדית"
+    elif alert.rsi_divergence == "bullish":
+        tech_note = "דיברגנס שורי ב-RSI מאשר היחלשות המוכרים"
+    elif alert.rsi_divergence == "bearish":
+        tech_note = "דיברגנס דובי ב-RSI מאשר היחלשות הקונים"
+    elif any("BOS" in f or "Break of Structure" in f for f in factors):
+        tech_note = "שבירת מבנה (BOS) מאשרת כיוון מוסדי"
+    elif any("VWAP" in f for f in factors):
+        tech_note = "מחיר מעל ה-VWAP — זרם קניות מוסדי"
+    elif any("Volume Spike" in f or "Volume" in f for f in factors):
+        tech_note = "פריצת ווליום חריגה מאשרת עניין מוסדי"
+    else:
+        tech_note = "מספר גורמי התכנסות טכניים תואמים"
+
+    rr_note = (f" | יחס סיכון/תגמול {alert.risk_reward:.1f}" if alert.risk_reward >= 1.5 else "")
+    horizon_note = f" — {horizon_heb}" if horizon_heb else ""
+
+    return (
+        f"עסקת {direction_heb}{horizon_note}: {tech_note}{rr_note}. "
+        f"הכניסה מומלצת סמוך ל-${alert.entry:.2f} עם ניהול סיכון קפדני."
+    )
+
+
+def _confidence_bar(score: int) -> str:
+    """Visual confidence bar: 10 blocks, filled proportionally."""
+    filled = round(score / 10)
+    bar    = "█" * filled + "░" * (10 - filled)
+    if score >= 75:
+        emoji = "🟢"
+    elif score >= 50:
+        emoji = "🟡"
+    else:
+        emoji = "🔴"
+    return f"{emoji} [{bar}] {score}%"
+
+
+def build_debate_section(debate: DebateResult) -> list[str]:
+    """Return formatted lines for 👁️ Visual Analysis and 🧠 Agent Council sections."""
+    lines: list[str] = []
+
+    # ── Visionary section (only when a pattern was identified) ────────────────
+    if debate.visionary_pattern:
+        confirms_emoji = "✅" if debate.visionary_confirms else "⚠️"
+        confirms_text  = "מאשר את הסיגנל" if debate.visionary_confirms else "סותר את הסיגנל"
+        lines += [
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━",
+            "👁️ *ניתוח ויזואלי (Computer Vision)*",
+            "",
+            f"🔍 *תבנית שזוהתה:* {debate.visionary_pattern}",
+            f"{confirms_emoji} *סטטוס:* {confirms_text}",
+        ]
+
+    # ── Agent Council section ─────────────────────────────────────────────────
+    rec_map = {
+        "כנס":                    "✅ המלצה: כנס לפוזיציה",
+        "הימנע":                  "❌ המלצה: הימנע מהעסקה",
+        "המתן לאישור נוסף":       "⏳ המלצה: המתן לאישור נוסף",
+    }
+
+    # Extract recommendation from full judge text if possible
+    recommendation = ""
+    try:
+        from stock_sentinel.debate_engine import _extract_json
+        judge_data = _extract_json(debate.full_judge)
+        rec_raw    = judge_data.get("המלצה", "")
+        recommendation = rec_map.get(rec_raw, f"✅ {rec_raw}" if rec_raw else "")
+        reasoning  = judge_data.get("נימוק", "")
+        verdict    = debate.judge_verdict
+    except Exception:
+        reasoning  = ""
+        verdict    = debate.judge_verdict
+
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "🧠 *סיכום מועצת הסוכנים*",
+        "",
+        f"🐂 *השור:* {debate.bull_argument}",
+        "",
+        f"🐻 *הדוב:* {debate.bear_argument}",
+        "",
+        "⚖️ *פסיקת השופט:*",
+        f"  {verdict}",
+    ]
+
+    if reasoning and reasoning != verdict:
+        lines.append(f"  _{reasoning}_")
+
+    lines += [
+        "",
+        f"🎯 *רמת ביטחון:* {_confidence_bar(debate.confidence_score)}",
+    ]
+
+    if recommendation:
+        lines += ["", f"*{recommendation}*"]
+
+    return lines
+
+
+def build_message(alert: Alert, headlines: list[str], debate: DebateResult | None = None) -> str:
     """Build the Expert-Tier Hebrew Telegram alert message (RTL-optimised)."""
     direction_emoji = "📈" if alert.direction == "LONG" else "📉"
     direction_heb   = "קניה (LONG)" if alert.direction == "LONG" else "מכירה (SHORT)"
@@ -252,9 +401,17 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
     if summary:
         lines += ["", "💡 *סיכום אנליסט:*", f"  {summary}"]
 
+    # Trade rationale — the 'why this trade, why now'
+    rationale = _build_trade_rationale(alert)
+    lines += ["", "🔑 *רציונל העסקה:*", f"  {rationale}"]
+
+    # Agent Council debate section (optional)
+    if debate is not None:
+        lines += build_debate_section(debate)
+
     lines += [
         "",
-        f"⏰ _{datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC_",
+        f"⏰ _{_israel_ts()}_",
     ]
     return "\n".join(lines)
 
@@ -264,41 +421,33 @@ def build_message(alert: Alert, headlines: list[str]) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_news_flash_message(flash: NewsFlash) -> str:
-    """Build Hebrew Telegram message for a breaking news flash."""
-    if flash.reaction == "bullish":
-        reaction_icon  = "🚀"
-        reaction_label = "תגובה צפויה: עלייה חזקה"
+    """Build clean Hebrew Telegram message for a breaking news flash."""
+    is_watchlist = getattr(flash, "is_watchlist", True)
+    if is_watchlist:
+        header = f"📢 *מבזק חדשות — {flash.ticker}*"
     else:
-        reaction_icon  = "⚠️"
-        reaction_label = "סיכון: ירידה חדה צפויה"
+        header = f"💎 *גילוי הזדמנות — {flash.ticker}*"
 
-    keywords_str = ", ".join(flash.catalyst_keywords[:5]) if flash.catalyst_keywords else "חדשות מהותיות"
-
-    if getattr(flash, "is_watchlist", True):
-        header = f"📢 *מבזק חדשות מתפרצות — {flash.ticker}*"
-    else:
-        header = f"💎 *גילוי הזדמנות — חדשות חמות — {flash.ticker}*"
+    # Append source in parentheses after summary — no separate link row
+    source_suffix = f" ({flash.source})" if flash.source else ""
 
     lines = [
         header,
         "",
-        f"📰 *כותרת:* {flash.title}",
+        f"💡 *כותרת:* {flash.title}",
         "",
-        f"📋 *סיכום:* {flash.summary}",
+        f"📝 *סיכום:* {flash.summary}{source_suffix}",
         "",
-        f"{reaction_icon} *{reaction_label}*",
-        f"🔑 *מילות מפתח:* {keywords_str}",
+        f"⏰ _{_israel_ts(flash.published_at)}_",
     ]
 
-    if flash.url:
-        lines += ["", f"🔗 [מקור: {flash.source}]({flash.url})"]
-    else:
-        lines += ["", f"📡 מקור: {flash.source}"]
+    # Discovery alerts only — sentiment tag
+    if not is_watchlist:
+        if flash.reaction == "bullish" or flash.sentiment_score > 0:
+            lines += ["", "🟢 *סנטימנט:* חיובי"]
+        elif flash.reaction == "bearish" or flash.sentiment_score < 0:
+            lines += ["", "🔴 *סנטימנט:* שלילי"]
 
-    lines += [
-        "",
-        f"⏰ _{flash.published_at.strftime('%d/%m/%Y %H:%M')} UTC_",
-    ]
     return "\n".join(lines)
 
 
@@ -318,39 +467,52 @@ async def send_news_flash(flash: NewsFlash, bot_token: str, chat_id: str) -> boo
 # Macro Flash (Task 23)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _build_macro_bottom_line(flash: MacroFlash) -> str:
+    """Generate a Hebrew 'bottom line' sentence from macro reaction and assets."""
+    assets = " ,".join(flash.affected_assets[:3]) if flash.affected_assets else "השוק"
+    influencers = flash.influencers or []
+
+    if flash.reaction == "bullish":
+        if any(k in influencers for k in ("Fed", "FOMC", "Interest Rates", "Interest Rate")):
+            return f"בשורה התחתונה: ציפיות להקלה מוניטרית — זרימת כסף צפויה לכיוון {assets}."
+        return f"בשורה התחתונה: אירוע חיובי לשוק — תנודתיות עולה ב-{assets}, הטיה לכיוון עלייה."
+    else:
+        if any(k in influencers for k in ("Fed", "FOMC", "Interest Rates", "Interest Rate")):
+            return f"בשורה התחתונה: ריבית גבוהה לאורך זמן — לחץ על מניות הצמיחה ועל {assets}."
+        if any(k in influencers for k in ("Tariff", "Trade War")):
+            return f"בשורה התחתונה: מלחמת סחר — לחץ מכירה צפוי על {assets}, העדפה לנכסי מקלט."
+        if any(k in influencers for k in ("CPI", "Inflation")):
+            return f"בשורה התחתונה: אינפלציה גבוהה מהצפוי — ירידות בשוקי המניות ועלייה בתשואות האג\"ח."
+        return f"בשורה התחתונה: צפי לתנודתיות גבוהה ב-{assets} — שמור על פוזיציות קטנות."
+
+
 def build_macro_flash_message(flash: MacroFlash) -> str:
-    """Build Hebrew Telegram message for a macro / political catalyst alert."""
+    """Build Hebrew Telegram message for a macro / political alert."""
     if flash.reaction == "bullish":
         sentiment_icon  = "📈"
-        sentiment_label = "Bullish — Risk-On (צפוי זרימת כסף לשוק)"
+        sentiment_label = "חיובי — כסף זורם לשוק (Risk-On)"
     else:
         sentiment_icon  = "📉"
-        sentiment_label = "Bearish — Risk-Off (צפויה יציאת כסף מהשוק)"
+        sentiment_label = "שלילי — כסף יוצא מהשוק (Risk-Off)"
 
-    influencers_str   = " | ".join(flash.influencers[:4]) if flash.influencers else "מאקרו כללי"
-    assets_str        = " / ".join(flash.affected_assets)
+    assets_str    = " / ".join(flash.affected_assets)
+    source_suffix = f" ({flash.source})" if flash.source else ""
+    bottom_line   = _build_macro_bottom_line(flash)
 
     lines = [
         "🏛️ *אירוע מאקרו משמעותי*",
-        f"🌐 *מבזק מאקרו ופוליטיקה עולמית*",
+        "🌐 *מבזק מאקרו ופוליטיקה עולמית*",
         "",
-        f"📰 *כותרת:* {flash.title}",
+        f"💡 *כותרת:* {flash.title}{source_suffix}",
         "",
-        f"📋 *ניתוח שוק:* {flash.summary}",
+        f"📝 *ניתוח שוק:* {flash.summary}",
         "",
         f"{sentiment_icon} *סנטימנט:* {sentiment_label}",
-        f"🔑 *טריגרים:* {influencers_str}",
         f"📊 *נכסים מושפעים:* {assets_str}",
-    ]
-
-    if flash.url:
-        lines += ["", f"🔗 [מקור: {flash.source}]({flash.url})"]
-    else:
-        lines += ["", f"📡 מקור: {flash.source}"]
-
-    lines += [
         "",
-        f"⏰ _{flash.published_at.strftime('%d/%m/%Y %H:%M')} UTC_",
+        f"🔑 *{bottom_line}*",
+        "",
+        f"⏰ _{_israel_ts(flash.published_at)}_",
     ]
     return "\n".join(lines)
 
@@ -368,32 +530,215 @@ async def send_macro_flash(flash: MacroFlash, bot_token: str, chat_id: str) -> b
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Smart Money Alert (Task 25)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_smart_money_message(alert: InsiderAlert | OptionsFlowAlert) -> str:
+    """Build Hebrew Telegram message for an insider purchase or unusual options flow."""
+    if isinstance(alert, InsiderAlert):
+        value_m = alert.value / 1_000_000
+        value_str = f"${value_m:.2f}M" if value_m >= 1 else f"${alert.value:,.0f}"
+        lines = [
+            "🕵️ *מעקב כסף חכם ודיווחים פנים-ארגוניים*",
+            "",
+            f"📌 *מניה:* {alert.ticker}",
+            f"👤 *בעל תפקיד:* {alert.insider_name} ({alert.position})",
+            f"💰 *סוג עסקה:* קנייה פנים-ארגונית",
+            f"📊 *כמות מניות:* {alert.shares:,}",
+            f"💵 *שווי העסקה:* {value_str}",
+            f"📅 *תאריך עסקה:* {alert.transaction_date.strftime('%d/%m/%Y')}",
+            f"📋 *מקור:* {alert.source}",
+            "",
+            "🔑 *ניתוח:* קנייה פנים-ארגונית משמעותית — בעל תפקיד בכיר מגדיל אחזקות. "
+            "סימן אפשרי לאמון הנהלה בפוטנציאל המניה.",
+            "",
+            f"⏰ _{_israel_ts()}_",
+        ]
+    else:
+        # OptionsFlowAlert
+        direction_emoji = "🟢" if alert.option_type == "CALL" else "🔴"
+        option_heb      = "CALL (ציפייה לעלייה)" if alert.option_type == "CALL" else "PUT (ציפייה לירידה)"
+        lines = [
+            "🕵️ *מעקב כסף חכם ודיווחים פנים-ארגוניים*",
+            "",
+            f"📌 *מניה:* {alert.ticker}",
+            f"{direction_emoji} *סוג אופציה:* {option_heb}",
+            f"🎯 *מחיר מימוש:* ${alert.strike:.1f}",
+            f"📅 *פקיעה:* {alert.expiry}",
+            f"📊 *נפח מסחר:* {alert.volume:,}  |  OI: {alert.open_interest:,}",
+            f"⚡ *יחס Volume/OI:* {alert.volume_oi_ratio:.1f}x",
+            f"📋 *מקור:* {alert.source}",
+            "",
+            f"🔑 *ניתוח:* נפח אופציות חריג — {alert.volume_oi_ratio:.1f}× מעל ה-Open Interest. "
+            "פעילות זו מאפיינת 'כסף חכם' שרוכש הגנה או ספקולציה כיוונית לפני אירוע צפוי.",
+            "",
+            f"⏰ _{_israel_ts()}_",
+        ]
+    return "\n".join(lines)
+
+
+async def send_smart_money_alert(
+    alert: InsiderAlert | OptionsFlowAlert, bot_token: str, chat_id: str
+) -> bool:
+    """Send a smart-money (insider/options) alert via Telegram. Returns True on success."""
+    bot  = Bot(token=bot_token)
+    text = build_smart_money_message(alert)
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        return True
+    except TelegramError as exc:
+        log.warning("send_smart_money_alert failed for %s: %s", alert.ticker, exc)
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Telegram dispatch
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def send_alert(
-    alert: Alert, headlines: list[str], bot_token: str, chat_id: str
+    alert: Alert,
+    headlines: list[str],
+    bot_token: str,
+    chat_id: str,
+    debate: DebateResult | None = None,
 ) -> int | None:
-    """Send alert via Telegram with 3 retries. Returns message_id on success, None on failure."""
-    import os
+    """Send alert via Telegram with 3 retries.
+
+    When a chart is present the full text is sent first (no caption limit),
+    then the chart is sent as a separate photo with a short one-liner caption.
+    When *debate* is provided the Agent Council section is appended.
+    Returns the message_id of the text message on success, None on failure.
+    """
     bot  = Bot(token=bot_token)
-    text = build_message(alert, headlines)
+    text = build_message(alert, headlines, debate)
+
+    msg_id: int | None = None
     for attempt in range(3):
         try:
-            if alert.chart_path and os.path.exists(alert.chart_path):
-                with open(alert.chart_path, "rb") as photo:
-                    msg = await bot.send_photo(
-                        chat_id=chat_id, photo=photo, caption=text, parse_mode="Markdown"
-                    )
-            else:
-                msg = await bot.send_message(
-                    chat_id=chat_id, text=text, parse_mode="Markdown"
-                )
-            return msg.message_id
+            msg = await bot.send_message(
+                chat_id=chat_id, text=text, parse_mode="Markdown"
+            )
+            msg_id = msg.message_id
+            break
         except TelegramError:
             if attempt < 2:
                 await asyncio.sleep(2 ** attempt * 2)
-    return None
+
+    if msg_id is None:
+        return None
+
+    # Send chart as a follow-up photo with a short caption (no 1,024-char limit issue)
+    if alert.chart_path and os.path.exists(alert.chart_path):
+        caption = (
+            f"📊 {alert.ticker} | {alert.direction} | "
+            f"כניסה ${alert.entry:.2f} → TP1 ${alert.take_profit_1 or alert.take_profit:.2f} | "
+            f"RSI {alert.rsi:.1f}"
+        )
+        for attempt in range(3):
+            try:
+                with open(alert.chart_path, "rb") as photo:
+                    await bot.send_photo(
+                        chat_id=chat_id, photo=photo,
+                        caption=caption,
+                        reply_to_message_id=msg_id,
+                    )
+                break
+            except TelegramError:
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt * 2)
+
+        # Clean up temporary chart PNG after sending to save disk space
+        try:
+            os.remove(alert.chart_path)
+        except OSError:
+            pass
+
+    return msg_id
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Learning Report (Task 27)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DAY_NAMES_HEB = {0: "שני", 1: "שלישי", 2: "רביעי", 3: "חמישי", 4: "שישי", 5: "שבת", 6: "ראשון"}
+
+
+def build_learning_report_message(report: LearningReport) -> str:
+    """Build Hebrew Telegram message for the weekly Self-Learning Report."""
+    week_s = report.week_start.strftime("%d/%m/%Y")
+    week_e = report.week_end.strftime("%d/%m/%Y")
+
+    lines = [
+        "🤖 *דוח למידה עצמית ושיפור אסטרטגיה*",
+        "",
+        f"📅 *תקופת ניתוח:* {week_s} — {week_e}",
+    ]
+
+    # ── No resolved trades ────────────────────────────────────────────────────
+    if report.total_trades == 0:
+        lines += [
+            "",
+            "📭 *אין עסקאות מוסכמות השבוע — אין ניתוח להציג.*",
+        ]
+        if report.unresolved:
+            lines.append(f"  ({report.unresolved} עסקאות עדיין פתוחות)")
+        lines += ["", f"⏰ _{_israel_ts()}_"]
+        return "\n".join(lines)
+
+    # ── Weekly stats block ─────────────────────────────────────────────────────
+    win_rate_pct = report.win_rate_before * 100
+    lines += [
+        "",
+        "📊 *סטטיסטיקת השבוע:*",
+        f"  סה\"כ עסקאות: `{report.total_trades}`"
+        f"  |  ✅ `{report.wins}`  |  ❌ `{report.losses}`",
+        f"  אחוז הצלחה: `{win_rate_pct:.1f}%`",
+    ]
+    if report.unresolved:
+        lines.append(f"  עסקאות פתוחות (לא כלולות): `{report.unresolved}`")
+
+    # ── Patterns / insights ────────────────────────────────────────────────────
+    if not report.patterns:
+        lines += [
+            "",
+            "✅ *לא זוהו אזורים רעילים השבוע. אין שינויי פילטר.*",
+        ]
+    else:
+        lines += ["", "🔍 *תובנות שזיהיתי:*", ""]
+        for i, p in enumerate(report.patterns, 1):
+            fail_pct = p.failure_rate * 100
+            lines += [
+                f"⚠️ *{i}. {p.description_heb}*",
+                f"   {p.failed_count}/{p.sample_count} כישלונות ({fail_pct:.0f}%)",
+                f"   → {p.action_heb}",
+                "",
+            ]
+
+        # ── Projected improvement ──────────────────────────────────────────────
+        if report.trades_filtered > 0:
+            after_pct = report.win_rate_after * 100
+            delta_pct = after_pct - win_rate_pct
+            lines += [
+                "━━━━━━━━━━━━━━━━━━━━━━━━",
+                f"🎯 *תחזית לאחר הפילטרים:* `{after_pct:.1f}%` הצלחה",
+                f"   (הסרת {report.trades_filtered} עסקאות רעילות"
+                + (f" — שיפור של `+{delta_pct:.1f}%`" if delta_pct > 0 else "") + ")",
+            ]
+
+    lines += ["", f"⏰ _{_israel_ts()}_"]
+    return "\n".join(lines)
+
+
+async def send_learning_report(report: LearningReport, bot_token: str, chat_id: str) -> bool:
+    """Send the weekly Self-Learning Report via Telegram. Returns True on success."""
+    bot  = Bot(token=bot_token)
+    text = build_learning_report_message(report)
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        return True
+    except TelegramError as exc:
+        log.warning("send_learning_report failed: %s", exc)
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -427,7 +772,7 @@ def build_daily_report(stats: dict) -> str:
 
     lines += [
         "",
-        f"⏰ _{datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC_",
+        f"⏰ _{_israel_ts()}_",
     ]
     return "\n".join(lines)
 
@@ -468,7 +813,8 @@ async def send_trade_update(
             f"🔔 *עדכון טרייד: {ticker}*\n\n"
             f"🛑 *סטופ לוס הופעל. סגירת פוזיציה.*\n"
             f"  מחיר נוכחי: `${current_price:.2f}`\n\n"
-            f"📊 *סטטוס:* הטרייד נסגר."
+            f"📊 *סטטוס:* הטרייד נסגר.\n\n"
+            f"⏰ _{_israel_ts()}_"
         )
     elif update_type in ("TP1", "TP2", "TP3"):
         _tp_info = {
@@ -481,7 +827,8 @@ async def send_trade_update(
             f"🔔 *עדכון טרייד: {ticker}*\n\n"
             f"✅ *יעד {tp_num} ({tp_label}) הושג!*\n"
             f"  מחיר: `${current_price:.2f}`\n\n"
-            f"📊 *סטטוס:* {status}"
+            f"📊 *סטטוס:* {status}\n\n"
+            f"⏰ _{_israel_ts()}_"
         )
     else:
         return False

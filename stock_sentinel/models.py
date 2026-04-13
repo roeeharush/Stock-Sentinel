@@ -127,6 +127,85 @@ class TickerSnapshot:
     last_alert_at: datetime | None = None
 
 @dataclass
+class PatternFinding:
+    """A single failure pattern identified by the Learning Engine."""
+    pattern_type: str        # "rsi_ceiling" | "ticker_block" | "day_block" | "hour_block"
+    description_heb: str     # human-readable Hebrew description
+    failure_rate: float      # 0.0 to 1.0
+    sample_count: int
+    failed_count: int
+    action_heb: str          # what was done (Hebrew)
+    # Blacklist action fields (one populated per type)
+    rsi_ceiling: float | None = None     # set for "rsi_ceiling"
+    blocked_ticker: str | None = None    # set for "ticker_block"
+    blocked_day: int | None = None       # set for "day_block"  (weekday() 0=Mon)
+    blocked_hour: int | None = None      # set for "hour_block" (ET hour)
+
+
+@dataclass
+class LearningReport:
+    """Output of one weekly Self-Learning Engine run."""
+    analysis_date: datetime
+    week_start: datetime
+    week_end: datetime
+    total_trades: int          # resolved trades analysed
+    wins: int
+    losses: int
+    unresolved: int            # trades still open (not counted in win rate)
+    win_rate_before: float     # raw win rate this week
+    win_rate_after: float      # projected win rate after filters applied
+    trades_filtered: int       # how many trades the new blacklist would have blocked
+    patterns: list[PatternFinding] = field(default_factory=list)
+    blocked_tickers: list[str] = field(default_factory=list)
+    blocked_hours: list[int] = field(default_factory=list)
+    blocked_days: list[int] = field(default_factory=list)
+    rsi_ceiling: float | None = None   # new max RSI for LONG signals
+
+
+@dataclass
+class DebateResult:
+    """Output of the Multi-Agent Debate Engine for a single trade signal."""
+    ticker: str
+    direction: str                  # "LONG" | "SHORT"
+    bull_argument: str              # 1-sentence strongest bull point (Hebrew)
+    bear_argument: str              # 1-sentence strongest bear point (Hebrew)
+    judge_verdict: str              # 1-sentence final recommendation (Hebrew)
+    confidence_score: int           # 0-100
+    full_bull: str = ""             # full Bull Agent response
+    full_bear: str = ""             # full Bear Agent response
+    full_judge: str = ""            # full Judge Agent response
+    full_visionary: str = ""        # full Visionary Agent response
+    visionary_pattern: str = ""     # Hebrew pattern name (e.g., "דגל שורי")
+    visionary_confirms: bool | None = None  # True=confirms signal, False=contradicts, None=skipped
+    debated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
+class InsiderAlert:
+    """A significant insider purchase surfaced by the Deep Data Engine."""
+    ticker: str
+    insider_name: str
+    position: str
+    shares: int
+    value: float               # USD
+    transaction_date: datetime
+    source: str = "SEC / Yahoo Finance"
+
+
+@dataclass
+class OptionsFlowAlert:
+    """Unusual options flow detected by the Deep Data Engine."""
+    ticker: str
+    expiry: str                # e.g. "2025-05-16"
+    strike: float
+    option_type: str           # "CALL" or "PUT"
+    volume: int
+    open_interest: int
+    volume_oi_ratio: float     # volume / open_interest
+    source: str = "Yahoo Finance"
+
+
+@dataclass
 class Alert:
     ticker: str
     direction: Literal["LONG", "SHORT"]

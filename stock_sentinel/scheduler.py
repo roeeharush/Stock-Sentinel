@@ -12,10 +12,11 @@ from stock_sentinel.analyzer import fetch_ohlcv, compute_signals
 from stock_sentinel.scraper import init_browser, scrape_sentiment, close_browser, save_cookies
 from stock_sentinel.news_scraper import fetch_news_sentiment
 from stock_sentinel.rss_provider import fetch_rss_sentiment
-from stock_sentinel.signal_filter import combined_sentiment_score, should_alert, update_cooldown
+from stock_sentinel.signal_filter import combined_sentiment_score, should_alert, update_cooldown, DynamicBlacklist
 from stock_sentinel.notifier import (
     generate_chart, send_alert, send_daily_report,
-    send_news_flash, send_macro_flash,
+    send_news_flash, send_macro_flash, send_smart_money_alert,
+    send_learning_report,
 )
 from stock_sentinel.db import init_db, log_alert, get_daily_stats
 from stock_sentinel.monitor import check_active_trades
@@ -27,6 +28,10 @@ from stock_sentinel.scanner import (
 )
 from stock_sentinel.signal_filter import combined_sentiment_score as _css
 from stock_sentinel.news_engine import NewsEngineState, run_news_engine_cycle
+from stock_sentinel.deep_data_engine import DeepDataState, run_deep_data_cycle
+from stock_sentinel.debate_engine import run_debate
+from stock_sentinel.learning_engine import run_weekly_learning
+from stock_sentinel import config as _cfg
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -36,6 +41,7 @@ async def _async_cycle(
     tickers: list[str],
     state: dict[str, TickerSnapshot],
     page,
+    blacklist: DynamicBlacklist | None = None,
 ) -> None:
     """Run one monitoring cycle for all tickers. Page is injected for testability."""
     consecutive_failures = 0
@@ -73,7 +79,7 @@ async def _async_cycle(
                 continue
 
             # --- Filtering & Action ---
-            if not should_alert(snap):
+            if not should_alert(snap, blacklist=blacklist):
                 continue
 
             score = combined_sentiment_score(snap)
@@ -128,8 +134,17 @@ async def _async_cycle(
                 pivot_s2=t.pivot_s2,
             )
 
+            # Optional: run Multi-Agent Debate + Vision before sending
+            debate = None
+            if _cfg.debate_enabled():
+                try:
+                    debate = await run_debate(alert, headlines, chart_path=chart_path)
+                except Exception as exc:
+                    log.warning("Debate engine skipped for %s: %s", ticker, exc)
+
             message_id = await send_alert(
-                alert, headlines, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
+                alert, headlines, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID,
+                debate=debate,
             )
             if message_id is not None:
                 log_alert(
@@ -166,17 +181,20 @@ async def _async_cycle(
             log.error("Failed to send circuit breaker alert: %s", exc)
 
 
-def run_cycle(state: dict[str, TickerSnapshot]) -> None:
+def run_cycle(state: dict[str, TickerSnapshot], blacklist: DynamicBlacklist | None = None) -> None:
     """Synchronous entry point called by APScheduler."""
-    asyncio.run(_run_with_browser(state))
+    asyncio.run(_run_with_browser(state, blacklist))
 
 
-async def _run_with_browser(state: dict[str, TickerSnapshot]) -> None:
+async def _run_with_browser(
+    state: dict[str, TickerSnapshot],
+    blacklist: DynamicBlacklist | None = None,
+) -> None:
     """Manages browser lifecycle for a full cycle."""
     pw = browser = page = None
     try:
         pw, browser, page = await init_browser(config.X_COOKIES_PATH)
-        await _async_cycle(config.WATCHLIST, state, page)
+        await _async_cycle(config.WATCHLIST, state, page, blacklist=blacklist)
     finally:
         if page is not None:
             await save_cookies(page, config.X_COOKIES_PATH)
@@ -237,9 +255,6 @@ async def _async_scanner_cycle(scanner_state: ScannerCooldownTracker) -> None:
                 continue
 
             # Sentiment: use news + RSS only (no browser required for scanner)
-            from stock_sentinel.news_scraper import fetch_news_sentiment
-            from stock_sentinel.rss_provider import fetch_rss_sentiment
-            from stock_sentinel.models import TickerSnapshot
             snap = TickerSnapshot(ticker=ticker)
             snap.technical      = signal
             snap.news_sentiment = fetch_news_sentiment(ticker)
@@ -301,8 +316,17 @@ async def _async_scanner_cycle(scanner_state: ScannerCooldownTracker) -> None:
                 ema_21=t.ema_21,
             )
 
+            # Optional: run Multi-Agent Debate + Vision for scanner hits too
+            debate = None
+            if _cfg.debate_enabled():
+                try:
+                    debate = await run_debate(alert, headlines, chart_path=chart_path)
+                except Exception as exc:
+                    log.warning("Scanner debate skipped for %s: %s", ticker, exc)
+
             message_id = await send_alert(
-                alert, headlines, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
+                alert, headlines, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID,
+                debate=debate,
             )
             if message_id is not None:
                 log_alert(alert, technical_score=t.technical_score, telegram_message_id=message_id)
@@ -356,12 +380,80 @@ def run_news_engine(news_state: NewsEngineState) -> None:
         log.error("News engine cycle failed: %s", exc)
 
 
+async def _async_deep_data_cycle(deep_state: DeepDataState) -> None:
+    """Fetch insider purchases + unusual options flow, send alerts for new hits."""
+    insider_alerts, options_alerts = await run_deep_data_cycle(config.WATCHLIST, deep_state)
+
+    for alert in insider_alerts:
+        try:
+            sent = await send_smart_money_alert(
+                alert, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
+            )
+            if sent:
+                log.info(
+                    "Insider alert sent: %s — %s purchased $%.0f",
+                    alert.ticker, alert.insider_name, alert.value,
+                )
+        except Exception as exc:
+            log.error("Insider alert dispatch failed for %s: %s", alert.ticker, exc)
+
+    for alert in options_alerts:
+        try:
+            sent = await send_smart_money_alert(
+                alert, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
+            )
+            if sent:
+                log.info(
+                    "Options flow alert sent: %s %s $%.1f exp=%s vol=%d (%.1fx OI)",
+                    alert.ticker, alert.option_type, alert.strike,
+                    alert.expiry, alert.volume, alert.volume_oi_ratio,
+                )
+        except Exception as exc:
+            log.error("Options flow alert dispatch failed for %s: %s", alert.ticker, exc)
+
+
+def run_deep_data(deep_state: DeepDataState) -> None:
+    """Synchronous APScheduler entry point for the Deep Data Engine."""
+    try:
+        asyncio.run(_async_deep_data_cycle(deep_state))
+    except Exception as exc:
+        log.error("Deep data cycle failed: %s", exc)
+
+
+def run_learning_engine(blacklist: DynamicBlacklist) -> None:
+    """Synchronous APScheduler entry point: analyse last week, update blacklist, send report."""
+    try:
+        report = run_weekly_learning(days=7)
+        log.info(
+            "Learning engine: %d resolved trades, %.0f%% win rate before → %.0f%% after, "
+            "%d patterns, %d trades filtered",
+            report.total_trades,
+            report.win_rate_before * 100,
+            report.win_rate_after * 100,
+            len(report.patterns),
+            report.trades_filtered,
+        )
+        # Update the live blacklist used by all next-week cycles
+        if report.patterns:
+            blacklist.apply_report(report)
+        else:
+            blacklist.clear()
+
+        asyncio.run(
+            send_learning_report(report, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
+        )
+    except Exception as exc:
+        log.error("Learning engine failed: %s", exc)
+
+
 def main() -> None:
     validate_secrets()
     init_db()
     state: dict[str, TickerSnapshot] = {}
     scanner_state = ScannerCooldownTracker()
     news_state    = NewsEngineState()
+    deep_state    = DeepDataState()
+    blacklist     = DynamicBlacklist()
     scheduler = BlockingScheduler(timezone="America/New_York")
 
     # Intraday monitoring: every 15 min, 9:00–15:45 ET, Mon–Fri
@@ -373,7 +465,7 @@ def main() -> None:
             minute="0,15,30,45",
             timezone="America/New_York",
         ),
-        args=[state],
+        args=[state, blacklist],
     )
 
     # Post-market validator: 16:30 ET, Mon–Fri
@@ -431,6 +523,42 @@ def main() -> None:
         ),
         args=[news_state],
         next_run_time=datetime.now(timezone.utc),
+    )
+
+    # Deep Data Engine: every hour 10:00–15:00 ET (market hours), Mon–Fri
+    scheduler.add_job(
+        run_deep_data,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour="10-15",
+            minute="0",
+            timezone="America/New_York",
+        ),
+        args=[deep_state],
+    )
+
+    # Deep Data Engine: post-market scan at 16:05 ET, Mon–Fri
+    scheduler.add_job(
+        run_deep_data,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour="16",
+            minute="5",
+            timezone="America/New_York",
+        ),
+        args=[deep_state],
+    )
+
+    # Self-Learning Engine: every Saturday at 18:00 ET
+    scheduler.add_job(
+        run_learning_engine,
+        CronTrigger(
+            day_of_week="sat",
+            hour="18",
+            minute="0",
+            timezone="America/New_York",
+        ),
+        args=[blacklist],
     )
 
     log.info("Stock Sentinel started. Watching: %s", ", ".join(config.WATCHLIST))

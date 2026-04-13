@@ -7,6 +7,15 @@ load_dotenv()
 WATCHLIST = ["NVDA", "AMZN", "SOFI", "OKLO", "RKLB", "FLNC", "ANXI", "AXTI"]
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.environ.get("TELEGRAM_CHAT_ID", "")
+ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
+
+# Debate Engine settings
+DEBATE_MODEL: str = "claude-haiku-4-5-20251001"   # fast + cheap for 3-agent debates
+DEBATE_MAX_TOKENS: int = 400                        # per agent response
+
+# Vision Agent settings
+VISION_MODEL: str = "claude-sonnet-4-6"            # multimodal model for chart pattern analysis
+VISION_MAX_TOKENS: int = 500                        # per Visionary response
 
 _PROJECT_ROOT = pathlib.Path(__file__).parent.parent
 X_COOKIES_PATH = str(_PROJECT_ROOT / "session" / "x_cookies.json")
@@ -94,3 +103,12 @@ def validate_secrets() -> None:
                if not os.environ.get(k)]
     if missing:
         raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
+
+def debate_enabled() -> bool:
+    """Return True when a real Anthropic API key is configured.
+
+    Guards against the placeholder value left in .env so the engine doesn't
+    attempt (and noisily fail) live API calls during development.
+    """
+    return bool(ANTHROPIC_API_KEY) and ANTHROPIC_API_KEY != "your-anthropic-api-key-here"

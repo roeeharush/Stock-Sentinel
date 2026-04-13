@@ -15,12 +15,15 @@ Three parallel scanning paths:
 Return type: tuple[list[NewsFlash], list[MacroFlash]]
 """
 import asyncio
+import logging
 import re
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 import yfinance as yf
+
+log = logging.getLogger(__name__)
 
 from stock_sentinel.analyzer import compute_signals, fetch_ohlcv
 from stock_sentinel.config import (
@@ -102,14 +105,52 @@ _TICKER_BLOCKLIST: frozenset[str] = frozenset({
 })
 
 # ─────────────────────────────────────────────────────────────────────────────
-# General financial news feeds (discovery mode)
+# Whitelisted financial news feeds — reliable wires only (Task 24.1)
 # ─────────────────────────────────────────────────────────────────────────────
 
 _GENERAL_NEWS_FEEDS: list[str] = [
-    "https://finance.yahoo.com/rss/topfinstories",
+    # Reuters — business wire
     "https://feeds.reuters.com/reuters/businessNews",
-    "https://www.marketwatch.com/rss/topstories",
+    # CNBC — top news
+    "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    # Yahoo Finance — main finance wire only (not blogs / opinion)
+    "https://finance.yahoo.com/rss/topfinstories",
+    # Wall Street Journal — markets
+    "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+    # Financial Times — latest headlines
+    "https://www.ft.com/rss/home/us",
 ]
+
+# Clean display names for known RSS domains → used in flash.source
+_FEED_SOURCE_NAMES: dict[str, str] = {
+    "feeds.reuters.com":  "Reuters",
+    "www.cnbc.com":       "CNBC",
+    "finance.yahoo.com":  "Yahoo Finance",
+    "feeds.a.dj.com":     "WSJ",
+    "www.ft.com":         "Financial Times",
+    "news.google.com":    "Google News",
+    "finance.google.com": "Google Finance",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Translation (Task 24.1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _translate_to_hebrew(text: str) -> str:
+    """Translate *text* from English to Hebrew using deep-translator.
+
+    Falls back to the original text on any failure so the pipeline never
+    blocks on a translation error.
+    """
+    if not text or not text.strip():
+        return text
+    try:
+        from deep_translator import GoogleTranslator  # noqa: PLC0415
+        translated = GoogleTranslator(source="auto", target="iw").translate(text)
+        return translated if translated else text
+    except Exception as exc:
+        log.debug("Translation failed (%s) — keeping original: %s", exc, text[:60])
+        return text
 
 _TICKER_RSS_TEMPLATE = (
     "https://news.google.com/rss/search"
@@ -123,11 +164,20 @@ _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StockSentinel/1.0)"}
 # ─────────────────────────────────────────────────────────────────────────────
 
 class NewsEngineState:
-    """Tracks seen item IDs and caches per-ticker liquidity results."""
+    """Tracks seen item IDs, warm-up state, and per-ticker liquidity cache."""
 
     def __init__(self) -> None:
         self._seen: set[str] = set()
         self._liquidity: dict[str, bool] = {}
+        self._warmed_up: bool = False   # True after first cycle completes
+
+    # ── warm-up / first-cycle silence ─────────────────────────────────────
+    @property
+    def warmed_up(self) -> bool:
+        return self._warmed_up
+
+    def mark_warmed_up(self) -> None:
+        self._warmed_up = True
 
     # ── dedup ──────────────────────────────────────────────────────────────
     def is_seen(self, item_id: str) -> bool:
@@ -139,6 +189,7 @@ class NewsEngineState:
     def clear(self) -> None:
         self._seen.clear()
         self._liquidity.clear()
+        self._warmed_up = False
 
     # ── liquidity cache ────────────────────────────────────────────────────
     def has_liquidity_cache(self, ticker: str) -> bool:
@@ -299,8 +350,9 @@ def _fetch_general_news() -> list[dict]:
                 link   = el.findtext("link",  default="")
                 guid   = el.findtext("guid",  default="")
                 source_tag = el.find("source")
+                _domain = feed_url.split("/")[2]
                 source = (source_tag.text if source_tag is not None and source_tag.text
-                          else feed_url.split("/")[2])  # domain as fallback
+                          else _FEED_SOURCE_NAMES.get(_domain, _domain))
                 if not title:
                     continue
                 item_id = guid or link or title
@@ -337,6 +389,12 @@ async def run_news_engine_cycle(
     flashes: list[NewsFlash] = []
     macro_flashes: list[MacroFlash] = []
 
+    # ── First-cycle warm-up (anti-flood): mark everything seen, emit nothing ──
+    # On the very first call after startup the seen-set is empty — every stored
+    # article would fire.  We prime the dedup set without alerting so only
+    # genuinely NEW items (arriving after the first poll) produce messages.
+    warming_up = not engine_state.warmed_up
+
     # ── Path 1: Watchlist ────────────────────────────────────────────────────
     for ticker in watchlist:
         raw_items: list[dict] = []
@@ -359,13 +417,20 @@ async def run_news_engine_cycle(
                 engine_state.mark_seen(item_id)
                 continue
 
-            reaction = "bullish" if score > 0 else "bearish"
             engine_state.mark_seen(item_id)
+
+            if warming_up:
+                continue   # silently prime the dedup set
+
+            reaction = "bullish" if score > 0 else "bearish"
+
+            # Translate title to Hebrew
+            title_heb = await asyncio.to_thread(_translate_to_hebrew, title)
 
             flash = NewsFlash(
                 ticker=ticker,
-                title=title,
-                summary=title,
+                title=title_heb,
+                summary=title_heb,
                 url=raw["url"],
                 source=raw["source"],
                 sentiment_score=score,
@@ -375,21 +440,21 @@ async def run_news_engine_cycle(
                 item_id=item_id,
             )
 
-            # TA confirmation
+            # TA confirmation — build Hebrew summary
             try:
                 df     = await asyncio.to_thread(fetch_ohlcv, ticker)
                 signal = await asyncio.to_thread(compute_signals, ticker, df)
                 if signal.direction != "NEUTRAL":
                     trend = "עולה" if signal.direction == "LONG" else "יורד"
                     flash.summary = (
-                        f"{title}. "
+                        f"{title_heb}. "
                         f"הניתוח הטכני מצביע על מגמה {trend} "
                         f"עם RSI {signal.rsi:.0f} ואיתות {signal.direction}."
                     )
                 else:
-                    flash.summary = f"{title}. אין אישור טכני לכניסה בשלב זה."
+                    flash.summary = f"{title_heb}. אין אישור טכני לכניסה בשלב זה."
             except Exception:
-                pass  # keep title-only summary
+                flash.summary = title_heb  # keep translated title as summary
 
             flashes.append(flash)
 
@@ -405,31 +470,28 @@ async def run_news_engine_cycle(
 
         title = raw["title"]
 
-        # Extract non-watchlist ticker candidates (watchlist tickers already
-        # handled in Path 1; skip them here to avoid duplicates)
         candidates = [t for t in _extract_tickers(title) if t not in watchlist_set]
         if not candidates:
-            # No ticker found — do NOT mark seen yet; Macro path may still want it
-            continue
+            continue  # no ticker — let Macro path evaluate
 
-        # High-impact keyword filter (stricter than watchlist path)
         matched_hik = _matches_catalyst(title, NEWS_DISCOVERY_KEYWORDS)
         if not matched_hik:
-            # No high-impact keyword — do NOT mark seen; Macro path may still want it
-            continue
+            continue  # no high-impact keyword — let Macro path evaluate
 
-        # Polarization filter — mark seen here because Macro also requires polarization
         score = _score_headline(title)
         if not _is_polarized(score):
             engine_state.mark_seen(item_id)
             continue
 
-        reaction = "bullish" if score > 0 else "bearish"
         engine_state.mark_seen(item_id)
 
-        # Liquidity check: first candidate that passes wins
+        if warming_up:
+            continue
+
+        reaction = "bullish" if score > 0 else "bearish"
+
         winning_ticker: str | None = None
-        for cand in candidates[:5]:   # cap at 5 yfinance calls per item
+        for cand in candidates[:5]:
             if await _check_liquidity(cand, engine_state, NEWS_DISCOVERY_MIN_MARKET_CAP):
                 winning_ticker = cand
                 break
@@ -437,10 +499,12 @@ async def run_news_engine_cycle(
         if not winning_ticker:
             continue
 
+        title_heb = await asyncio.to_thread(_translate_to_hebrew, title)
+
         flash = NewsFlash(
             ticker=winning_ticker,
-            title=title,
-            summary=title,
+            title=title_heb,
+            summary=title_heb,
             url=raw["url"],
             source=raw["source"],
             sentiment_score=score,
@@ -452,8 +516,6 @@ async def run_news_engine_cycle(
         flashes.append(flash)
 
     # ── Path 3: Macro / Political ────────────────────────────────────────────
-    # Re-use the already-fetched general_items; items consumed by Discovery
-    # (already mark_seen'd) are skipped here too.
     for raw in general_items:
         item_id = raw["item_id"]
         if engine_state.is_seen(item_id):
@@ -471,20 +533,24 @@ async def run_news_engine_cycle(
             engine_state.mark_seen(item_id)
             continue
 
-        reaction = "bullish" if score > 0 else "bearish"
         engine_state.mark_seen(item_id)
 
-        # Build a 2-sentence market-impact summary
+        if warming_up:
+            continue
+
+        reaction = "bullish" if score > 0 else "bearish"
+
+        title_heb     = await asyncio.to_thread(_translate_to_hebrew, title)
         influencer_str = " / ".join(matched_macro[:3])
         direction_heb  = "חיובי (Risk-On)" if reaction == "bullish" else "שלילי (Risk-Off)"
         summary = (
-            f"{title}. "
+            f"{title_heb}. "
             f"האירוע קשור ל-{influencer_str} ועשוי להשפיע על כיוון השוק הכללי — "
             f"סנטימנט {direction_heb}."
         )
 
         macro_flashes.append(MacroFlash(
-            title=title,
+            title=title_heb,
             summary=summary,
             url=raw["url"],
             source=raw["source"],
@@ -493,5 +559,10 @@ async def run_news_engine_cycle(
             reaction=reaction,
             item_id=item_id,
         ))
+
+    # Mark warm-up complete after first cycle
+    if warming_up:
+        engine_state.mark_warmed_up()
+        log.info("News engine warm-up complete — %d items primed, alerts now live", len(engine_state._seen))
 
     return flashes, macro_flashes

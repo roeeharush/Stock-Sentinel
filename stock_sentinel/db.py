@@ -195,3 +195,34 @@ def mark_sl_hit(alert_id: int) -> None:
     """Mark SL as hit (trade closed at loss)."""
     with _connect() as conn:
         conn.execute("UPDATE alerts SET sl_hit = 1 WHERE id = ?", (alert_id,))
+
+
+def get_weekly_trades(days: int = 7) -> list[dict]:
+    """Return all trades alerted within the past *days* days, with decoded factors.
+
+    Includes both resolved and unresolved trades so the learning engine can
+    report on unresolved count separately.
+    """
+    cutoff = (
+        datetime.now(timezone.utc)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+    )
+    from datetime import timedelta
+    cutoff -= timedelta(days=days)
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT * FROM alerts
+               WHERE alerted_at >= ?
+                 AND ticker != 'SYSTEM'
+               ORDER BY alerted_at ASC""",
+            (cutoff.isoformat(),),
+        ).fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        try:
+            d["confluence_factors"] = json.loads(d.get("confluence_factors", "[]"))
+        except Exception:
+            d["confluence_factors"] = []
+        result.append(d)
+    return result
