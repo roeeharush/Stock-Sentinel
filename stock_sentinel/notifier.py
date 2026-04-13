@@ -49,7 +49,10 @@ __all__ = ["build_message", "generate_chart", "send_alert",
            "build_macro_flash_message", "send_macro_flash",
            "build_smart_money_message", "send_smart_money_alert",
            "build_debate_section",
-           "build_learning_report_message", "send_learning_report"]
+           "build_learning_report_message", "send_learning_report",
+           # Scheduled reports
+           "send_morning_brief", "send_premarket_catalysts",
+           "build_daily_performance_report", "send_daily_performance_report"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -421,32 +424,57 @@ def build_message(alert: Alert, headlines: list[str], debate: DebateResult | Non
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_news_flash_message(flash: NewsFlash) -> str:
-    """Build clean Hebrew Telegram message for a breaking news flash."""
-    is_watchlist = getattr(flash, "is_watchlist", True)
-    if is_watchlist:
-        header = f"📢 *מבזק חדשות — {flash.ticker}*"
-    else:
-        header = f"💎 *גילוי הזדמנות — {flash.ticker}*"
+    """Build Hebrew Telegram message for a breaking news flash.
 
-    # Append source in parentheses after summary — no separate link row
-    source_suffix = f" ({flash.source})" if flash.source else ""
+    Structure:
+      [Header]
+      💡 כותרת  — the translated headline
+      ━━━
+      📊 ניתוח  — AI-generated bullet-point analysis (the 'why', not the 'what')
+      ⏰ timestamp | 🟢/🔴 bottom-line sentiment verdict
+    """
+    is_watchlist = getattr(flash, "is_watchlist", True)
+    header = (
+        f"📢 *מבזק חדשות — {flash.ticker}*"
+        if is_watchlist
+        else f"💎 *גילוי הזדמנות — {flash.ticker}*"
+    )
+
+    source_suffix = f"  _{flash.source}_" if flash.source else ""
+
+    # ── Summary / analysis section ────────────────────────────────────────────
+    # The AI writes in Hebrew with bullet points (•) when relevant.
+    # We display it under an "ניתוח" label so it's clearly distinct from the
+    # raw translated headline above.
+    summary_lines: list[str] = []
+    for line in flash.summary.splitlines():
+        stripped = line.strip()
+        if stripped:
+            summary_lines.append(f"  {stripped}")
+
+    # ── Sentiment bottom line ─────────────────────────────────────────────────
+    is_bullish = flash.reaction == "bullish" or flash.sentiment_score > 0
+    is_bearish = flash.reaction == "bearish" or flash.sentiment_score < 0
+    if is_bullish:
+        sentiment_line = "🟢 *מסקנה: סנטימנט שורי — לחץ קנייה אפשרי*"
+    elif is_bearish:
+        sentiment_line = "🔴 *מסקנה: סנטימנט דובי — לחץ מכירה אפשרי*"
+    else:
+        sentiment_line = "⚪ *מסקנה: סנטימנט ניטרלי*"
 
     lines = [
         header,
         "",
         f"💡 *כותרת:* {flash.title}",
         "",
-        f"📝 *סיכום:* {flash.summary}{source_suffix}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "📊 *ניתוח:*",
+        *summary_lines,
         "",
-        f"⏰ _{_israel_ts(flash.published_at)}_",
+        f"⏰ _{_israel_ts(flash.published_at)}_{source_suffix}",
+        "",
+        sentiment_line,
     ]
-
-    # Discovery alerts only — sentiment tag
-    if not is_watchlist:
-        if flash.reaction == "bullish" or flash.sentiment_score > 0:
-            lines += ["", "🟢 *סנטימנט:* חיובי"]
-        elif flash.reaction == "bearish" or flash.sentiment_score < 0:
-            lines += ["", "🔴 *סנטימנט:* שלילי"]
 
     return "\n".join(lines)
 
@@ -808,6 +836,149 @@ async def send_daily_report(stats: dict, bot_token: str, chat_id: str) -> bool:
         await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
         return True
     except TelegramError:
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Morning Brief (08:30 IDT)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def send_morning_brief(text: str, bot_token: str, chat_id: str) -> bool:
+    """Send the AI-generated morning brief via Telegram. Returns True on success."""
+    if not text.strip():
+        log.info("Morning brief: empty text — nothing to send")
+        return False
+    bot    = Bot(token=bot_token)
+    header = (
+        "🌅 *Stock Sentinel — דוח בוקר*\n"
+        f"⏰ _{_israel_ts()}_\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+    try:
+        await bot.send_message(
+            chat_id=chat_id, text=header + text, parse_mode="Markdown"
+        )
+        return True
+    except TelegramError as exc:
+        log.warning("send_morning_brief failed: %s", exc)
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pre-Market Catalysts (16:20 IDT — 10 min before US open)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def send_premarket_catalysts(text: str, bot_token: str, chat_id: str) -> bool:
+    """Send the pre-market catalyst report via Telegram. Returns True on success."""
+    if not text.strip():
+        log.info("Pre-market catalysts: empty text — channel stays silent")
+        return False
+    bot    = Bot(token=bot_token)
+    header = (
+        "⚡ *Stock Sentinel — קטליזטורים לפני פתיחת השוק*\n"
+        f"⏰ _{_israel_ts()}_\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+    try:
+        await bot.send_message(
+            chat_id=chat_id, text=header + text, parse_mode="Markdown"
+        )
+        return True
+    except TelegramError as exc:
+        log.warning("send_premarket_catalysts failed: %s", exc)
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Daily Performance Report (23:30 IDT — 30 min after US close)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_daily_performance_report(stats: dict, today_alerts: list[dict]) -> str:
+    """Build an enhanced Hebrew daily performance report.
+
+    Includes the standard stats block plus a per-trade prediction-vs-actual table
+    derived from the TP/SL hit flags already tracked in the DB.
+    """
+    total    = stats.get("total", 0)
+    wins     = stats.get("wins", 0)
+    losses   = stats.get("losses", 0)
+    win_rate = stats.get("win_rate", 0.0)
+    top_facs = stats.get("top_factors", [])
+
+    lines = [
+        "📊 *דוח ביצועים יומי — Stock Sentinel*",
+        f"⏰ _{_israel_ts()}_",
+        "",
+    ]
+
+    if total == 0 and not today_alerts:
+        lines.append("📭 *לא נשלחו התראות סחר היום.*")
+        return "\n".join(lines)
+
+    # ── Stats block ───────────────────────────────────────────────────────────
+    if total > 0:
+        lines += [
+            "━━━━━━━━━━━━━━━━━━━━━━━━",
+            "📈 *סטטיסטיקת היום:*",
+            f"  סה\"כ עסקאות: `{total}`  |  ✅ `{wins}` הצלחות  |  ❌ `{losses}` כישלונות",
+            f"  🎯 אחוז הצלחה: `{win_rate:.0%}`",
+        ]
+
+    if top_facs:
+        lines += ["", "🏆 *גורמי מכנס מובילים:*"]
+        for i, f in enumerate(top_facs, 1):
+            lines.append(f"  {i}. {translate_to_hebrew(f)}")
+
+    # ── Per-trade prediction vs actual ────────────────────────────────────────
+    if today_alerts:
+        lines += [
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🔍 *מעקב עסקאות — תחזית מול מציאות:*",
+            "",
+        ]
+        for trade in today_alerts[:12]:
+            ticker    = trade.get("ticker", "?")
+            direction = trade.get("direction", "?")
+            entry     = trade.get("entry_price", 0.0)
+            tp1       = trade.get("take_profit_1") or trade.get("take_profit", 0.0)
+            sl        = trade.get("stop_loss", 0.0)
+
+            # Direction label
+            dir_arrow = "↑" if direction == "LONG" else "↓"
+
+            # Outcome badge from DB hit-flags
+            if trade.get("sl_hit"):
+                outcome = "❌ SL"
+            elif trade.get("tp3_hit"):
+                outcome = "🏆 TP3"
+            elif trade.get("tp2_hit"):
+                outcome = "✅ TP2"
+            elif trade.get("tp1_hit"):
+                outcome = "✅ TP1"
+            else:
+                outcome = "⏳ פתוח"
+
+            lines.append(
+                f"*{ticker}* {dir_arrow} {direction} | "
+                f"כניסה `${entry:.2f}` → יעד `${tp1:.2f}` | סטופ `${sl:.2f}` | {outcome}"
+            )
+
+    lines += ["", f"_Stock Sentinel · {_israel_ts()}_"]
+    return "\n".join(lines)
+
+
+async def send_daily_performance_report(
+    stats: dict, today_alerts: list[dict], bot_token: str, chat_id: str
+) -> bool:
+    """Send the enhanced daily performance report via Telegram. Returns True on success."""
+    bot  = Bot(token=bot_token)
+    text = build_daily_performance_report(stats, today_alerts)
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        return True
+    except TelegramError as exc:
+        log.warning("send_daily_performance_report failed: %s", exc)
         return False
 
 

@@ -21,6 +21,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
+import anthropic
 import yfinance as yf
 
 log = logging.getLogger(__name__)
@@ -151,6 +152,264 @@ def _translate_to_hebrew(text: str) -> str:
     except Exception as exc:
         log.debug("Translation failed (%s) — keeping original: %s", exc, text[:60])
         return text
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI-powered news analysis (Task 21.5 upgrade)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ai_analyze_news_sync(
+    title: str,
+    ticker: str,
+    keywords: list[str],
+    reaction: str,
+    ta_context: str = "",
+) -> str:
+    """Generate a professional Hebrew financial analysis for a news headline.
+
+    Uses Claude Haiku (fast + cheap) as a senior financial analyst.
+    Explicitly forbidden from repeating the headline in the output.
+    Falls back to a Google-translated title when the Anthropic key is absent
+    or the call fails, so the pipeline never blocks.
+    """
+    from stock_sentinel.config import ANTHROPIC_API_KEY, debate_enabled  # avoid circular
+
+    if not debate_enabled():
+        return _translate_to_hebrew(title)
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        direction_heb = "שורי (ציפייה לעלייה)" if reaction == "bullish" else "דובי (ציפייה לירידה)"
+        kw_str = ", ".join(keywords[:5])
+        ta_line = f"\nהקשר טכני: {ta_context}" if ta_context else ""
+
+        system_prompt = (
+            "אתה אנליסט פיננסי בכיר המתמחה בשוק המניות האמריקאי. "
+            "אתה כותב ניתוחים קצרים בעברית עסקית קולחת ומקצועית לטובת סוחרים פעילים. "
+            "כלל ברזל: אסור לחזור על הכותרת שסופקה — הניתוח מסביר את ה'למה' ואת ההשלכות, לא את ה'מה'. "
+            "אם יש כמה נקודות חשובות, השתמש בבולטים (•). "
+            "היה תמציתי: עד 4 משפטים קצרים או עד 4 בולטים."
+        )
+
+        user_prompt = (
+            f"נתח את הידיעה הפיננסית הבאה עבור מניית {ticker}:\n\n"
+            f"כותרת (אל תחזור עליה): {title}\n"
+            f"סנטימנט: {direction_heb}\n"
+            f"קטליזטורים שזוהו: {kw_str}"
+            f"{ta_line}\n\n"
+            "הסבר את הסיבות הכלכליות מאחורי הידיעה, את ההשלכות על המניה, "
+            "ואת מה שהסוחר צריך לדעת. כתוב בעברית בלבד."
+        )
+
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        result = response.content[0].text.strip()
+        return result if result else _translate_to_hebrew(title)
+
+    except Exception as exc:
+        log.debug("AI news analysis failed for %s: %s", ticker, exc)
+        return _translate_to_hebrew(title)
+
+
+async def _ai_analyze_news(
+    title: str,
+    ticker: str,
+    keywords: list[str],
+    reaction: str,
+    ta_signal=None,
+) -> str:
+    """Async wrapper around _ai_analyze_news_sync.
+
+    Accepts an optional TechnicalSignal to enrich the analysis with live TA.
+    """
+    ta_context = ""
+    if ta_signal is not None and ta_signal.direction != "NEUTRAL":
+        trend_heb = "עולה" if ta_signal.direction == "LONG" else "יורד"
+        ta_context = (
+            f"מגמה {trend_heb} | RSI {ta_signal.rsi:.0f} | "
+            f"כניסה ${ta_signal.entry:.2f} | איתות {ta_signal.direction}"
+        )
+    return await asyncio.to_thread(
+        _ai_analyze_news_sync, title, ticker, keywords, reaction, ta_context
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scheduled report AI functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ai_morning_brief_sync(items: list[dict], watchlist: list[str]) -> str:
+    """Generate a structured Hebrew morning brief from the most recent news items.
+
+    Falls back to a simple translated bullet list when the Anthropic key is absent.
+    """
+    from stock_sentinel.config import ANTHROPIC_API_KEY, debate_enabled  # avoid circular
+
+    if not debate_enabled() or not items:
+        lines = ["🌅 *סיכום לילה:*", ""]
+        for item in items[:10]:
+            lines.append(f"• {_translate_to_hebrew(item.get('title', ''))}")
+        return "\n".join(lines)
+
+    try:
+        client       = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        watchlist_str = ", ".join(watchlist[:12])
+        headlines_block = "\n".join(
+            f"- {item.get('title', '')} ({item.get('source', '')})"
+            for item in items[:15]
+        )
+        system_prompt = (
+            "אתה אנליסט פיננסי בכיר המכין דוח בוקר יומי לסוחרים פעילים בשוק המניות האמריקאי. "
+            "כתוב בעברית עסקית קולחת. "
+            "הדוח מובנה, ממוקד, ומדגיש אירועים שישפיעו על המסחר של היום."
+        )
+        user_prompt = (
+            f"הכן דוח בוקר יומי בעברית עבור הסוחרים שלי.\n\n"
+            f"מניות תחת מעקב: {watchlist_str}\n\n"
+            f"חדשות מהלילה:\n{headlines_block}\n\n"
+            "הנחיות:\n"
+            "1. פתח עם ברכת בוקר קצרה וסנטימנט השוק הכללי (🟢 שורי / 🔴 דובי).\n"
+            "2. סכם 4–6 אירועים מרכזיים שישפיעו על המסחר — כל אחד בשורה עם מניה רלוונטית (אם ידועה), "
+            "הסבר קצר, ו-🟢/🔴.\n"
+            "3. סיים בשורת 'נקודות מפתח לפתיחת השוק' — משפט אחד.\n"
+            "כתוב בעברית בלבד. אל תציין מחירים ספציפיים שלא סופקו."
+        )
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=600,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        result = response.content[0].text.strip()
+        return result if result else ""
+    except Exception as exc:
+        log.warning("AI morning brief failed: %s", exc)
+        return ""
+
+
+def _ai_premarket_catalysts_sync(items: list[dict]) -> str:
+    """Filter high-impact pre-market catalysts and return a Hebrew ranked report.
+
+    Falls back to a simple scored bullet list without AI.
+    """
+    from stock_sentinel.config import ANTHROPIC_API_KEY, debate_enabled
+
+    # Pre-filter to high-impact items only
+    HIGH_IMPACT_KWS = {
+        "earnings", "fda", "acquisition", "merger", "upgrade", "downgrade",
+        "beat", "miss", "approval", "guidance", "buyout", "lawsuit", "settlement",
+        "layoffs", "dividend", "revenue", "forecast",
+    }
+    filtered = [
+        item for item in items
+        if any(kw in item.get("title", "").lower() for kw in HIGH_IMPACT_KWS)
+    ]
+    if not filtered:
+        filtered = items[:12]  # fallback: use top items
+
+    if not debate_enabled() or not filtered:
+        lines = ["⚡ *קטליזטורים לפני פתיחת השוק:*", ""]
+        for item in filtered[:12]:
+            score = _score_headline(item.get("title", ""))
+            emoji = "🟢" if score > 0 else "🔴"
+            lines.append(f"{emoji} {_translate_to_hebrew(item.get('title', ''))}")
+        return "\n".join(lines)
+
+    try:
+        client          = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        headlines_block = "\n".join(
+            f"- {item.get('title', '')} ({item.get('source', '')})"
+            for item in filtered[:15]
+        )
+        system_prompt = (
+            "אתה אנליסט פיננסי בכיר המתמחה בזיהוי קטליזטורים לפני פתיחת שוק המניות האמריקאי. "
+            "עבודתך: לסנן ולדרג ידיעות לפי פוטנציאל תנודתיות — מהגבוה לנמוך. "
+            "כתוב בעברית עסקית. עבור כל קטליזטור: 🟢 (שורי) / 🔴 (דובי)."
+        )
+        user_prompt = (
+            "סנן וניתח את הקטליזטורים הבאים לפני פתיחת השוק:\n\n"
+            f"{headlines_block}\n\n"
+            "הנחיות:\n"
+            "1. בחר 5–10 קטליזטורים בעלי ההשפעה הגבוהה ביותר על מחירי המניות.\n"
+            "2. עבור כל קטליזטור: 🟢/🔴 | שם המניה (אם ידוע) | הסבר קצר של ה'למה' — שורה אחת.\n"
+            "3. דרג מהגבוה לנמוך לפי רמת ההשפעה הצפויה.\n"
+            "כתוב בעברית בלבד."
+        )
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=500,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        result = response.content[0].text.strip()
+        return result if result else ""
+    except Exception as exc:
+        log.warning("AI pre-market catalysts failed: %s", exc)
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public: scheduled report cycle runners
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_morning_brief_cycle(watchlist: list[str]) -> str:
+    """Fetch recent news from all sources and generate a Hebrew morning brief.
+
+    Intended to run at 08:30 IDT (01:30 ET) before the Israeli trading day begins.
+    Returns the formatted Hebrew text, or '' if nothing newsworthy was found.
+    """
+    all_items: list[dict] = []
+    all_items.extend(await asyncio.to_thread(_fetch_general_news))
+    for ticker in watchlist[:6]:          # cap to avoid rate limits
+        all_items.extend(await asyncio.to_thread(_fetch_yfinance_news, ticker))
+        await asyncio.sleep(0)            # yield to event loop
+
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for item in all_items:
+        title = item.get("title", "").strip()
+        if title and title not in seen:
+            seen.add(title)
+            unique.append(item)
+
+    if not unique:
+        log.info("Morning brief: no news items found")
+        return ""
+
+    log.info("Morning brief: %d unique items — generating AI summary", len(unique))
+    return await asyncio.to_thread(_ai_morning_brief_sync, unique[:20], watchlist)
+
+
+async def run_premarket_catalysts_cycle(watchlist: list[str]) -> str:
+    """Fetch news and extract ranked high-impact pre-market catalysts.
+
+    Intended to run at 16:20 IDT (09:20 ET) — 10 minutes before US market open.
+    Returns the formatted Hebrew text, or '' if no catalysts qualify.
+    """
+    all_items: list[dict] = []
+    all_items.extend(await asyncio.to_thread(_fetch_general_news))
+    for ticker in watchlist[:6]:
+        all_items.extend(await asyncio.to_thread(_fetch_yfinance_news, ticker))
+        await asyncio.sleep(0)
+
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for item in all_items:
+        title = item.get("title", "").strip()
+        if title and title not in seen:
+            seen.add(title)
+            unique.append(item)
+
+    if not unique:
+        log.info("Pre-market catalysts: no news items found")
+        return ""
+
+    log.info("Pre-market catalysts: %d items — generating AI catalyst report", len(unique))
+    return await asyncio.to_thread(_ai_premarket_catalysts_sync, unique)
+
 
 _TICKER_RSS_TEMPLATE = (
     "https://news.google.com/rss/search"
@@ -440,21 +699,23 @@ async def run_news_engine_cycle(
                 item_id=item_id,
             )
 
-            # TA confirmation — build Hebrew summary
+            # Fetch TA for context (failure is non-fatal — AI runs with or without it)
+            ta_signal = None
             try:
-                df     = await asyncio.to_thread(fetch_ohlcv, ticker)
-                signal = await asyncio.to_thread(compute_signals, ticker, df)
-                if signal.direction != "NEUTRAL":
-                    trend = "עולה" if signal.direction == "LONG" else "יורד"
-                    flash.summary = (
-                        f"{title_heb}. "
-                        f"הניתוח הטכני מצביע על מגמה {trend} "
-                        f"עם RSI {signal.rsi:.0f} ואיתות {signal.direction}."
-                    )
-                else:
-                    flash.summary = f"{title_heb}. אין אישור טכני לכניסה בשלב זה."
+                df        = await asyncio.to_thread(fetch_ohlcv, ticker)
+                ta_signal = await asyncio.to_thread(compute_signals, ticker, df)
             except Exception:
-                flash.summary = title_heb  # keep translated title as summary
+                pass
+
+            # AI-powered analysis — passes original English title so the model
+            # reasons on clean input; flash.title stays as the Hebrew translation.
+            flash.summary = await _ai_analyze_news(
+                title=title,
+                ticker=ticker,
+                keywords=matched,
+                reaction=reaction,
+                ta_signal=ta_signal,
+            )
 
             flashes.append(flash)
 
@@ -499,12 +760,18 @@ async def run_news_engine_cycle(
         if not winning_ticker:
             continue
 
-        title_heb = await asyncio.to_thread(_translate_to_hebrew, title)
+        title_heb  = await asyncio.to_thread(_translate_to_hebrew, title)
+        ai_summary = await _ai_analyze_news(
+            title=title,
+            ticker=winning_ticker,
+            keywords=matched_hik,
+            reaction=reaction,
+        )
 
         flash = NewsFlash(
             ticker=winning_ticker,
             title=title_heb,
-            summary=title_heb,
+            summary=ai_summary,
             url=raw["url"],
             source=raw["source"],
             sentiment_score=score,

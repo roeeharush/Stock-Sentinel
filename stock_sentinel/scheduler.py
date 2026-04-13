@@ -17,8 +17,10 @@ from stock_sentinel.notifier import (
     generate_chart, send_alert, send_daily_report,
     send_news_flash, send_macro_flash, send_smart_money_alert,
     send_learning_report,
+    send_morning_brief, send_premarket_catalysts,
+    send_daily_performance_report,
 )
-from stock_sentinel.db import init_db, log_alert, get_daily_stats
+from stock_sentinel.db import init_db, log_alert, get_daily_stats, get_today_alerts
 from stock_sentinel.monitor import check_active_trades
 from stock_sentinel.validator import validate_daily
 from stock_sentinel.scanner import (
@@ -27,7 +29,10 @@ from stock_sentinel.scanner import (
     filter_candidates,
 )
 from stock_sentinel.signal_filter import combined_sentiment_score as _css
-from stock_sentinel.news_engine import NewsEngineState, run_news_engine_cycle
+from stock_sentinel.news_engine import (
+    NewsEngineState, run_news_engine_cycle,
+    run_morning_brief_cycle, run_premarket_catalysts_cycle,
+)
 from stock_sentinel.deep_data_engine import DeepDataState, run_deep_data_cycle
 from stock_sentinel.debate_engine import run_debate
 from stock_sentinel.learning_engine import run_weekly_learning
@@ -484,6 +489,72 @@ def run_learning_engine(blacklist: DynamicBlacklist) -> None:
         log.error("Learning engine failed: %s", exc)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Scheduled reports — Morning Brief / Pre-Market / Daily Performance
+# Timezone note: all three jobs use timezone="Asia/Jerusalem" in their
+# CronTrigger so the times below are in IDT/IST (Israel time) and APScheduler
+# handles the DST transition automatically.
+#
+# IDT (UTC+3) is always 7 hours ahead of US Eastern regardless of DST season,
+# because both Israel and the US shift clocks at roughly the same time of year.
+#   08:30 IDT = 01:30 ET  (overnight brief before Israeli trading day)
+#   16:20 IDT = 09:20 ET  (10 min before NYSE open)
+#   23:30 IDT = 16:30 ET  (30 min after NYSE close)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _async_morning_brief() -> None:
+    text = await run_morning_brief_cycle(config.WATCHLIST)
+    if text:
+        await send_morning_brief(text, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
+        log.info("Morning brief sent")
+    else:
+        log.info("Morning brief: no newsworthy items — channel silent")
+
+
+async def _async_premarket_catalysts() -> None:
+    text = await run_premarket_catalysts_cycle(config.WATCHLIST)
+    if text:
+        await send_premarket_catalysts(text, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
+        log.info("Pre-market catalysts sent")
+    else:
+        log.info("Pre-market catalysts: no high-impact items — channel silent")
+
+
+def run_morning_brief() -> None:
+    """Sync APScheduler entry point — Morning Brief at 08:30 IDT."""
+    try:
+        asyncio.run(_async_morning_brief())
+    except Exception as exc:
+        log.error("Morning brief failed: %s", exc)
+
+
+def run_premarket_catalysts() -> None:
+    """Sync APScheduler entry point — Pre-Market Catalysts at 16:20 IDT."""
+    try:
+        asyncio.run(_async_premarket_catalysts())
+    except Exception as exc:
+        log.error("Pre-market catalysts failed: %s", exc)
+
+
+def run_daily_performance_report() -> None:
+    """Sync APScheduler entry point — Enhanced Daily Performance Report at 23:30 IDT."""
+    try:
+        stats        = get_daily_stats()
+        today_alerts = get_today_alerts()
+        asyncio.run(
+            send_daily_performance_report(
+                stats, today_alerts,
+                config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID,
+            )
+        )
+        log.info(
+            "Daily performance report sent: %d alerts today, %.0f%% win rate",
+            len(today_alerts), stats.get("win_rate", 0) * 100,
+        )
+    except Exception as exc:
+        log.error("Daily performance report failed: %s", exc)
+
+
 def main() -> None:
     validate_secrets()
     init_db()
@@ -517,14 +588,39 @@ def main() -> None:
         ),
     )
 
-    # Daily performance report: 17:00 ET, Mon–Fri
+    # ── Scheduled intelligence reports (all times in IDT/IST — Asia/Jerusalem) ──
+
+    # Morning Brief: 08:30 IDT — overnight news digest before Israeli trading day
     scheduler.add_job(
-        run_daily_report,
+        run_morning_brief,
         CronTrigger(
             day_of_week="mon-fri",
-            hour="17",
-            minute="0",
-            timezone="America/New_York",
+            hour=8,
+            minute=30,
+            timezone="Asia/Jerusalem",
+        ),
+    )
+
+    # Pre-Market Catalysts: 16:20 IDT (09:20 ET) — 10 min before NYSE open
+    scheduler.add_job(
+        run_premarket_catalysts,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour=16,
+            minute=20,
+            timezone="Asia/Jerusalem",
+        ),
+    )
+
+    # Daily Performance Report: 23:30 IDT (16:30 ET) — 30 min after NYSE close
+    # Replaces the old 17:00 ET report with a richer prediction-vs-actual summary.
+    scheduler.add_job(
+        run_daily_performance_report,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour=23,
+            minute=30,
+            timezone="Asia/Jerusalem",
         ),
     )
 

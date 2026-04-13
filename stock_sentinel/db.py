@@ -197,6 +197,31 @@ def mark_sl_hit(alert_id: int) -> None:
         conn.execute("UPDATE alerts SET sl_hit = 1 WHERE id = ?", (alert_id,))
 
 
+def get_today_alerts() -> list[dict]:
+    """Return all trade alerts sent today (UTC date), resolved or still open.
+
+    Used by the daily performance report to build the prediction-vs-actual table.
+    Excludes SYSTEM diagnostic rows.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT * FROM alerts
+               WHERE alerted_at LIKE ? AND ticker != 'SYSTEM'
+               ORDER BY alerted_at DESC""",
+            (f"{today}%",),
+        ).fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        try:
+            d["confluence_factors"] = json.loads(d.get("confluence_factors", "[]"))
+        except Exception:
+            d["confluence_factors"] = []
+        result.append(d)
+    return result
+
+
 def get_weekly_trades(days: int = 7) -> list[dict]:
     """Return all trades alerted within the past *days* days, with decoded factors.
 
