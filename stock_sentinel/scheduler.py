@@ -73,9 +73,19 @@ async def _async_cycle(
 
             try:
                 df = fetch_ohlcv(ticker)
+            except ValueError as exc:
+                log.warning("%s: skipped — OHLCV fetch failed: %s", ticker, exc)
+                continue
+            if df is None or df.empty or len(df) < 50:
+                log.warning(
+                    "%s: skipped — insufficient OHLCV data (%d bars, need 50)",
+                    ticker, len(df) if df is not None else 0,
+                )
+                continue
+            try:
                 snap.technical = compute_signals(ticker, df)
             except ValueError as exc:
-                log.warning("%s: technical analysis skipped — %s", ticker, exc)
+                log.warning("%s: skipped — signal computation failed: %s", ticker, exc)
                 continue
 
             # --- Filtering & Action ---
@@ -99,6 +109,14 @@ async def _async_cycle(
             institutional_score = round(
                 min(max(ts_component + ss_component, 1.0), 10.0), 1
             )
+
+            # ── High-probability gate: scan continues, alert is silent ─────
+            if institutional_score < config.INSTITUTIONAL_SCORE_MIN:
+                log.debug(
+                    "%s: institutional_score %.1f < %.1f — scan complete, no alert fired",
+                    ticker, institutional_score, config.INSTITUTIONAL_SCORE_MIN,
+                )
+                continue
 
             alert = Alert(
                 ticker=ticker,
@@ -158,27 +176,14 @@ async def _async_cycle(
         except Exception as exc:  # noqa: BLE001 — ticker-level isolation
             log.error("%s: unexpected error in cycle — %s: %s", ticker, type(exc).__name__, exc)
 
-    # Fire circuit breaker admin alert outside the per-ticker loop
+    # Circuit breaker: log only — do NOT create an Alert object or call send_alert.
+    # Sending a fake SYSTEM ticker through the trade-alert path produces phantom
+    # alerts with 0.0 financial values.  PM2 log captures this error line instead.
     if circuit_open:
-        log.error("Circuit breaker triggered — pausing scraper for this cycle")
-        cb_alert = Alert(
-            ticker="SYSTEM",
-            direction="LONG",
-            entry=0.0,
-            stop_loss=0.0,
-            take_profit=0.0,
-            rsi=0.0,
-            sentiment_score=0.0,
+        log.error(
+            "Circuit breaker triggered — scraper paused for this cycle after %d consecutive failures",
+            config.SCRAPER_CIRCUIT_BREAKER_N,
         )
-        try:
-            await send_alert(
-                cb_alert,
-                [],
-                config.TELEGRAM_BOT_TOKEN,
-                config.TELEGRAM_CHAT_ID,
-            )
-        except Exception as exc:
-            log.error("Failed to send circuit breaker alert: %s", exc)
 
 
 def run_cycle(state: dict[str, TickerSnapshot], blacklist: DynamicBlacklist | None = None) -> None:
@@ -243,8 +248,22 @@ async def _async_scanner_cycle(scanner_state: ScannerCooldownTracker) -> None:
     for cand in qualified:
         ticker = cand.ticker
         try:
-            df = fetch_ohlcv(ticker)
-            signal = compute_signals(ticker, df)
+            try:
+                df = fetch_ohlcv(ticker)
+            except ValueError as exc:
+                log.warning("Scanner skip %s: OHLCV fetch failed — %s", ticker, exc)
+                continue
+            if df is None or df.empty or len(df) < 50:
+                log.warning(
+                    "Scanner skip %s: insufficient OHLCV data (%d bars, need 50)",
+                    ticker, len(df) if df is not None else 0,
+                )
+                continue
+            try:
+                signal = compute_signals(ticker, df)
+            except ValueError as exc:
+                log.warning("Scanner skip %s: signal computation failed — %s", ticker, exc)
+                continue
 
             if signal.direction == "NEUTRAL":
                 continue
@@ -280,6 +299,14 @@ async def _async_scanner_cycle(scanner_state: ScannerCooldownTracker) -> None:
             ts_component   = t.technical_score * 7.0 / 100.0
             ss_component   = (score + 1.0) * 1.5
             inst_score     = round(min(max(ts_component + ss_component, 1.0), 10.0), 1)
+
+            # ── High-probability gate: scan continues, alert is silent ─────
+            if inst_score < config.INSTITUTIONAL_SCORE_MIN:
+                log.debug(
+                    "Scanner skip %s: institutional_score %.1f < %.1f — no alert fired",
+                    ticker, inst_score, config.INSTITUTIONAL_SCORE_MIN,
+                )
+                continue
 
             alert = Alert(
                 ticker=ticker,

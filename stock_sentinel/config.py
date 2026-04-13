@@ -33,6 +33,7 @@ ATR_TP2_MULTIPLIER: float = 3.0   # moderate target
 ATR_TP3_MULTIPLIER: float = 5.0   # ambitious target
 SCRAPER_CIRCUIT_BREAKER_N = 3
 TECHNICAL_SCORE_MIN: int = 60        # minimum confluence score to trigger an alert
+INSTITUTIONAL_SCORE_MIN: float = 6.0  # minimum institutional score (1-10) to fire an alert
 VOLUME_SPIKE_MULTIPLIER: float = 2.0  # volume must exceed N× 20-period average
 ADX_TREND_MIN: float = 25.0   # minimum ADX for "strong trend"
 OBV_SLOPE_BARS: int = 5       # bars to measure OBV slope

@@ -609,6 +609,29 @@ async def send_alert(
     When *debate* is provided the Agent Council section is appended.
     Returns the message_id of the text message on success, None on failure.
     """
+    # ── Hard validation firewall ──────────────────────────────────────────────
+    # Reject any call that carries placeholder / error-state data so that
+    # technical failures can NEVER produce a Telegram message, regardless of
+    # what upstream code does.
+    if alert.ticker == "SYSTEM":
+        log.error(
+            "send_alert BLOCKED: ticker='SYSTEM' — phantom alert suppressed. "
+            "This indicates a circuit-breaker or error-handler is calling send_alert incorrectly."
+        )
+        return None
+    if not alert.entry or alert.entry == 0.0:
+        log.error(
+            "send_alert BLOCKED for %s: entry=0.0 — data integrity check failed, alert suppressed.",
+            alert.ticker,
+        )
+        return None
+    if alert.direction == "NEUTRAL":
+        log.error(
+            "send_alert BLOCKED for %s: direction=NEUTRAL — only LONG/SHORT alerts may be sent.",
+            alert.ticker,
+        )
+        return None
+
     bot  = Bot(token=bot_token)
     text = build_message(alert, headlines, debate)
 

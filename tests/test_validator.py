@@ -121,14 +121,16 @@ def test_validate_daily_resolves_win(monkeypatch):
     from stock_sentinel.models import Alert
 
     init_db()
+    # generated_at set to yesterday so the mock bar (today) is strictly after the alert date
     alert = Alert(
         ticker="NVDA", direction="LONG", entry=900.0,
         stop_loss=882.0, take_profit=927.0, rsi=28.0,
         sentiment_score=0.5, confluence_factors=["EMA 200 Trend"],
+        generated_at=datetime.now(timezone.utc) - timedelta(days=1),
     )
     log_alert(alert, technical_score=75)
 
-    # Mock yfinance to return a DF with High > TP
+    # Mock yfinance to return a DF with High > TP (bar date = today, strictly after yesterday's alert)
     mock_df = _make_df(highs=[935.0], lows=[890.0], base_date=(datetime.now(timezone.utc) - timedelta(days=1)).date())
     with patch("stock_sentinel.validator.yf.download", return_value=mock_df):
         result = validate_daily()
