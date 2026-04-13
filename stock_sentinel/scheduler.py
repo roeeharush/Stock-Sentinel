@@ -245,7 +245,17 @@ async def _async_scanner_cycle(scanner_state: ScannerCooldownTracker) -> None:
     candidates = await fetch_market_movers()
     qualified  = filter_candidates(candidates, scanner_state)
 
+    # ── Smoke-test rate limiter ───────────────────────────────────────────────
+    # Set config.SMOKE_TEST_LIMIT = 0 (or remove) to disable.
+    # While INSTITUTIONAL_SCORE_MIN is lowered for testing, this cap prevents
+    # flooding the Telegram channel.
+    _smoke_limit = getattr(config, "SMOKE_TEST_LIMIT", 0)
+    alerts_sent  = 0
+
     for cand in qualified:
+        if _smoke_limit > 0 and alerts_sent >= _smoke_limit:
+            log.info("Smoke test limit reached (%d/%d alerts sent) — stopping cycle early", alerts_sent, _smoke_limit)
+            break
         ticker = cand.ticker
         try:
             try:
@@ -359,6 +369,7 @@ async def _async_scanner_cycle(scanner_state: ScannerCooldownTracker) -> None:
                 log_alert(alert, technical_score=t.technical_score, telegram_message_id=message_id)
                 scanner_state.mark_alerted(ticker, entry)
                 log.info("Scanner alert sent: %s %s (RR=%.2f)", ticker, t.direction, t.risk_reward)
+                alerts_sent += 1
 
         except Exception as exc:
             log.error("Scanner: unexpected error for %s — %s: %s", ticker, type(exc).__name__, exc)
