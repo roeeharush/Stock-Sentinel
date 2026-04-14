@@ -433,11 +433,13 @@ def build_news_flash_message(flash: NewsFlash) -> str:
       📊 ניתוח  — AI-generated bullet-point analysis (the 'why', not the 'what')
       ⏰ timestamp | 🟢/🔴 bottom-line sentiment verdict
     """
+    RLM = "\u200f"  # Right-to-Left Mark — forces RTL layout in Telegram
+
     is_watchlist = getattr(flash, "is_watchlist", True)
     header = (
-        f"📢 *מבזק חדשות — {flash.ticker}*"
+        f"{RLM}📢 *מבזק חדשות — {flash.ticker}*"
         if is_watchlist
-        else f"💎 *גילוי הזדמנות — {flash.ticker}*"
+        else f"{RLM}💎 *גילוי הזדמנות — {flash.ticker}*"
     )
 
     source_suffix = f"  _{flash.source}_" if flash.source else ""
@@ -450,28 +452,28 @@ def build_news_flash_message(flash: NewsFlash) -> str:
     for line in flash.summary.splitlines():
         stripped = line.strip()
         if stripped:
-            summary_lines.append(f"  {stripped}")
+            summary_lines.append(f"{RLM}  {stripped}")
 
     # ── Sentiment bottom line ─────────────────────────────────────────────────
     is_bullish = flash.reaction == "bullish" or flash.sentiment_score > 0
     is_bearish = flash.reaction == "bearish" or flash.sentiment_score < 0
     if is_bullish:
-        sentiment_line = "🟢 *מסקנה: סנטימנט שורי — לחץ קנייה אפשרי*"
+        sentiment_line = f"{RLM}🟢 *מסקנה: סנטימנט שורי — לחץ קנייה אפשרי*"
     elif is_bearish:
-        sentiment_line = "🔴 *מסקנה: סנטימנט דובי — לחץ מכירה אפשרי*"
+        sentiment_line = f"{RLM}🔴 *מסקנה: סנטימנט דובי — לחץ מכירה אפשרי*"
     else:
-        sentiment_line = "⚪ *מסקנה: סנטימנט ניטרלי*"
+        sentiment_line = f"{RLM}⚪ *מסקנה: סנטימנט ניטרלי*"
 
     lines = [
         header,
         "",
-        f"💡 *כותרת:* {flash.title}",
+        f"{RLM}💡 *כותרת:* {flash.title}",
         "",
         "━━━━━━━━━━━━━━━━━━━━━━━━",
-        "📊 *ניתוח:*",
+        f"{RLM}📊 *ניתוח:*",
         *summary_lines,
         "",
-        f"⏰ _{_israel_ts(flash.published_at)}_{source_suffix}",
+        f"{RLM}⏰ _{_israel_ts(flash.published_at)}_{source_suffix}",
         "",
         sentiment_line,
     ]
@@ -848,16 +850,19 @@ async def send_morning_brief(text: str, bot_token: str, chat_id: str) -> bool:
     if not text.strip():
         log.info("Morning brief: empty text — nothing to send")
         return False
-    bot    = Bot(token=bot_token)
-    header = (
-        "🌅 *Stock Sentinel — דוח בוקר*\n"
-        f"⏰ _{_israel_ts()}_\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    )
+    bot = Bot(token=bot_token)
+    # Build header with HTML bold
+    header_lines = [
+        f"\u200f<b>🌅 Stock Sentinel — דוח בוקר</b>",
+        f"\u200f⏰ {_israel_ts()}",
+        "\u200f━━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+    ]
+    # Prefix every AI-generated line with RLM so Telegram renders RTL correctly
+    body_lines = [f"\u200f{line}" for line in text.split("\n")]
+    full_text  = "\n".join(header_lines + body_lines)
     try:
-        await bot.send_message(
-            chat_id=chat_id, text=header + text, parse_mode="Markdown"
-        )
+        await bot.send_message(chat_id=chat_id, text=full_text, parse_mode="HTML")
         return True
     except TelegramError as exc:
         log.warning("send_morning_brief failed: %s", exc)
@@ -873,16 +878,17 @@ async def send_premarket_catalysts(text: str, bot_token: str, chat_id: str) -> b
     if not text.strip():
         log.info("Pre-market catalysts: empty text — channel stays silent")
         return False
-    bot    = Bot(token=bot_token)
-    header = (
-        "⚡ *Stock Sentinel — קטליזטורים לפני פתיחת השוק*\n"
-        f"⏰ _{_israel_ts()}_\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    )
+    bot = Bot(token=bot_token)
+    header_lines = [
+        f"\u200f<b>⚡ Stock Sentinel — קטליזטורים לפני פתיחת השוק</b>",
+        f"\u200f⏰ {_israel_ts()}",
+        "\u200f━━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+    ]
+    body_lines = [f"\u200f{line}" for line in text.split("\n")]
+    full_text  = "\n".join(header_lines + body_lines)
     try:
-        await bot.send_message(
-            chat_id=chat_id, text=header + text, parse_mode="Markdown"
-        )
+        await bot.send_message(chat_id=chat_id, text=full_text, parse_mode="HTML")
         return True
     except TelegramError as exc:
         log.warning("send_premarket_catalysts failed: %s", exc)

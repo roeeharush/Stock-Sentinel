@@ -133,6 +133,17 @@ _FEED_SOURCE_NAMES: dict[str, str] = {
     "finance.google.com": "Google Finance",
 }
 
+# Quality whitelist — only these sources pass the source filter
+_ALLOWED_SOURCES: frozenset[str] = frozenset({
+    "Reuters", "Bloomberg", "CNBC", "WSJ", "Yahoo Finance",
+    "Seeking Alpha", "Barron's", "Financial Times", "MarketWatch",
+})
+
+
+def _is_allowed_source(source: str) -> bool:
+    """Return True if *source* is on the quality whitelist."""
+    return source in _ALLOWED_SOURCES
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Translation (Task 24.1)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -157,24 +168,26 @@ def _translate_to_hebrew(text: str) -> str:
 # AI-powered news analysis (Task 21.5 upgrade)
 # ─────────────────────────────────────────────────────────────────────────────
 
+_IMPACT_SCORE_MIN = 8  # only send news that scores >= this
+
+
 def _ai_analyze_news_sync(
     title: str,
     ticker: str,
     keywords: list[str],
     reaction: str,
     ta_context: str = "",
-) -> str:
+) -> tuple[str, int]:
     """Generate a professional Hebrew financial analysis for a news headline.
 
-    Uses Claude Haiku (fast + cheap) as a senior financial analyst.
-    Explicitly forbidden from repeating the headline in the output.
-    Falls back to a Google-translated title when the Anthropic key is absent
+    Returns (analysis_text, impact_score) where impact_score is 1-10.
+    Falls back to (translated_title, 5) when the Anthropic key is absent
     or the call fails, so the pipeline never blocks.
     """
     from stock_sentinel.config import ANTHROPIC_API_KEY, debate_enabled  # avoid circular
 
     if not debate_enabled():
-        return _translate_to_hebrew(title)
+        return _translate_to_hebrew(title), 5
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -184,10 +197,14 @@ def _ai_analyze_news_sync(
 
         system_prompt = (
             "אתה אנליסט פיננסי בכיר המתמחה בשוק המניות האמריקאי. "
-            "אתה כותב ניתוחים קצרים בעברית עסקית קולחת ומקצועית לטובת סוחרים פעילים. "
-            "כלל ברזל: אסור לחזור על הכותרת שסופקה — הניתוח מסביר את ה'למה' ואת ההשלכות, לא את ה'מה'. "
-            "אם יש כמה נקודות חשובות, השתמש בבולטים (•). "
-            "היה תמציתי: עד 4 משפטים קצרים או עד 4 בולטים."
+            "אתה כותב ניתוחים קצרים בעברית עסקית מקצועית לסוחרים פעילים. "
+            "כלל ברזל: אסור לחזור על הכותרת — הניתוח מסביר 'למה' ו'מה ההשלכות'. "
+            "השתמש בטרמינולוגיה פיננסית מקצועית: לדוגמה 'תחזית רווח', 'שוליים גולמיים', "
+            "'תשואה על הון', 'תנודתיות משתמעת', 'זרימת הון מוסדי'. "
+            "כתוב בדיוק 3 נקודות תמציתיות וחדות בפורמט בולטים (•). "
+            "בשורה האחרונה בלבד כתוב בפורמט הזה בדיוק: ציון השפעה: X/10 "
+            "(X הוא מספר שלם 1–10 המשקף את עוצמת ההשפעה הפוטנציאלית על מחיר המניה). "
+            "אין להמציא נתונים שלא סופקו."
         )
 
         user_prompt = (
@@ -196,22 +213,34 @@ def _ai_analyze_news_sync(
             f"סנטימנט: {direction_heb}\n"
             f"קטליזטורים שזוהו: {kw_str}"
             f"{ta_line}\n\n"
-            "הסבר את הסיבות הכלכליות מאחורי הידיעה, את ההשלכות על המניה, "
-            "ואת מה שהסוחר צריך לדעת. כתוב בעברית בלבד."
+            "הסבר את הסיבות הכלכליות, את ההשלכות על המניה, ואת מה שהסוחר צריך לדעת. "
+            "כתוב בעברית בלבד."
         )
 
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=300,
+            max_tokens=3000,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )
         result = response.content[0].text.strip()
-        return result if result else _translate_to_hebrew(title)
+
+        # Parse "ציון השפעה: X/10" from the last line, strip it from display text
+        impact_score = 5  # safe default
+        clean_lines: list[str] = []
+        for line in result.split("\n"):
+            m = re.search(r"ציון השפעה[:\s]+(\d+)", line)
+            if m:
+                impact_score = min(10, max(1, int(m.group(1))))
+            else:
+                clean_lines.append(line)
+        analysis = "\n".join(clean_lines).strip() or result
+
+        return analysis, impact_score
 
     except Exception as exc:
         log.debug("AI news analysis failed for %s: %s", ticker, exc)
-        return _translate_to_hebrew(title)
+        return _translate_to_hebrew(title), 5
 
 
 async def _ai_analyze_news(
@@ -220,10 +249,11 @@ async def _ai_analyze_news(
     keywords: list[str],
     reaction: str,
     ta_signal=None,
-) -> str:
+) -> tuple[str, int]:
     """Async wrapper around _ai_analyze_news_sync.
 
     Accepts an optional TechnicalSignal to enrich the analysis with live TA.
+    Returns (analysis_text, impact_score).
     """
     ta_context = ""
     if ta_signal is not None and ta_signal.direction != "NEUTRAL":
@@ -249,37 +279,47 @@ def _ai_morning_brief_sync(items: list[dict], watchlist: list[str]) -> str:
     from stock_sentinel.config import ANTHROPIC_API_KEY, debate_enabled  # avoid circular
 
     if not debate_enabled() or not items:
-        lines = ["🌅 *סיכום לילה:*", ""]
+        lines = ["🌅 סיכום לילה:", ""]
         for item in items[:10]:
             lines.append(f"• {_translate_to_hebrew(item.get('title', ''))}")
         return "\n".join(lines)
 
     try:
-        client       = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        client        = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         watchlist_str = ", ".join(watchlist[:12])
+        today_str     = datetime.now(timezone.utc).strftime("%d/%m/%Y")
         headlines_block = "\n".join(
-            f"- {item.get('title', '')} ({item.get('source', '')})"
-            for item in items[:15]
+            f"- [{item.get('source', '?')}] {item.get('title', '')}"
+            for item in items[:25]
         )
         system_prompt = (
-            "אתה אנליסט פיננסי בכיר המכין דוח בוקר יומי לסוחרים פעילים בשוק המניות האמריקאי. "
-            "כתוב בעברית עסקית קולחת. "
-            "הדוח מובנה, ממוקד, ומדגיש אירועים שישפיעו על המסחר של היום."
+            "אתה אנליסט בכיר בקרן גידור המתמחה בשוק המניות האמריקאי. "
+            "אתה מכין דוח בוקר יומי לסוחרים מקצועיים. "
+            "כתוב אך ורק בעברית עסקית מקצועית. "
+            "השתמש בטרמינולוגיה פיננסית מדויקת: "
+            "'תחזית רווח' (לא 'ציפייה לרווחים'), "
+            "'מומנטום שורי/דובי', 'שוליים גולמיים', 'זרימת הון מוסדי', "
+            "'עצירת הפסד', 'יעד מחיר', 'רמת תמיכה/התנגדות', 'תנודתיות משתמעת'. "
+            "אסור לתרגם ביטויים באופן מילולי — "
+            "לדוגמה: 'fueling the move' → 'מחזק את המומנטום' (לא 'דלק לתנועה'). "
+            "אסור להמציא תאריכים, מחירים, או עובדות שלא סופקו. "
+            "כתוב 3–5 נקודות תמציתיות וחדות לכל מניה רלוונטית."
         )
         user_prompt = (
-            f"הכן דוח בוקר יומי בעברית עבור הסוחרים שלי.\n\n"
+            f"הכן דוח בוקר מקצועי לתאריך {today_str}.\n\n"
             f"מניות תחת מעקב: {watchlist_str}\n\n"
-            f"חדשות מהלילה:\n{headlines_block}\n\n"
-            "הנחיות:\n"
-            "1. פתח עם ברכת בוקר קצרה וסנטימנט השוק הכללי (🟢 שורי / 🔴 דובי).\n"
-            "2. סכם 4–6 אירועים מרכזיים שישפיעו על המסחר — כל אחד בשורה עם מניה רלוונטית (אם ידועה), "
-            "הסבר קצר, ו-🟢/🔴.\n"
-            "3. סיים בשורת 'נקודות מפתח לפתיחת השוק' — משפט אחד.\n"
-            "כתוב בעברית בלבד. אל תציין מחירים ספציפיים שלא סופקו."
+            f"חדשות שהגיעו:\n{headlines_block}\n\n"
+            "מבנה הדוח:\n"
+            "1. שורה אחת: סנטימנט שוק כללי — 🟢 שורי / 🔴 דובי / 🟡 מעורב + הסבר קצר.\n"
+            "2. עבור כל מניה שמוזכרת בחדשות: שם המניה + 3–5 נקודות בולטים (•) "
+            "המסבירות את ה'למה' וההשפעה הצפויה, ו-🟢/🔴 בסוף כל נקודה.\n"
+            "3. שורת סיום: 'מוקד המסחר היום' — משפט אחד.\n\n"
+            "חוקים: כתוב בעברית בלבד. אין לציין מחירים שלא סופקו. "
+            "אין להשתמש בתאריכים קבועים — 'היום' מתייחס ל-" + today_str + "."
         )
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=600,
+            max_tokens=3000,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )
@@ -371,16 +411,19 @@ async def run_morning_brief_cycle(watchlist: list[str]) -> str:
     unique: list[dict] = []
     for item in all_items:
         title = item.get("title", "").strip()
-        if title and title not in seen:
-            seen.add(title)
-            unique.append(item)
+        if not title or title in seen:
+            continue
+        if not _is_allowed_source(item.get("source", "")):
+            continue
+        seen.add(title)
+        unique.append(item)
 
     if not unique:
-        log.info("Morning brief: no news items found")
+        log.info("Morning brief: no news items from whitelisted sources")
         return ""
 
     log.info("Morning brief: %d unique items — generating AI summary", len(unique))
-    return await asyncio.to_thread(_ai_morning_brief_sync, unique[:20], watchlist)
+    return await asyncio.to_thread(_ai_morning_brief_sync, unique[:25], watchlist)
 
 
 async def run_premarket_catalysts_cycle(watchlist: list[str]) -> str:
@@ -399,12 +442,15 @@ async def run_premarket_catalysts_cycle(watchlist: list[str]) -> str:
     unique: list[dict] = []
     for item in all_items:
         title = item.get("title", "").strip()
-        if title and title not in seen:
-            seen.add(title)
-            unique.append(item)
+        if not title or title in seen:
+            continue
+        if not _is_allowed_source(item.get("source", "")):
+            continue
+        seen.add(title)
+        unique.append(item)
 
     if not unique:
-        log.info("Pre-market catalysts: no news items found")
+        log.info("Pre-market catalysts: no news items from whitelisted sources")
         return ""
 
     log.info("Pre-market catalysts: %d items — generating AI catalyst report", len(unique))
@@ -423,12 +469,15 @@ _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StockSentinel/1.0)"}
 # ─────────────────────────────────────────────────────────────────────────────
 
 class NewsEngineState:
-    """Tracks seen item IDs, warm-up state, and per-ticker liquidity cache."""
+    """Tracks seen item IDs, warm-up state, per-ticker liquidity cache, and
+    per-ticker story deduplication (2-hour window)."""
 
     def __init__(self) -> None:
         self._seen: set[str] = set()
         self._liquidity: dict[str, bool] = {}
         self._warmed_up: bool = False   # True after first cycle completes
+        # {ticker: {story_fingerprint: first_seen_at}}
+        self._ticker_story: dict[str, dict[str, datetime]] = {}
 
     # ── warm-up / first-cycle silence ─────────────────────────────────────
     @property
@@ -438,7 +487,7 @@ class NewsEngineState:
     def mark_warmed_up(self) -> None:
         self._warmed_up = True
 
-    # ── dedup ──────────────────────────────────────────────────────────────
+    # ── global item-id dedup ───────────────────────────────────────────────
     def is_seen(self, item_id: str) -> bool:
         return item_id in self._seen
 
@@ -448,7 +497,30 @@ class NewsEngineState:
     def clear(self) -> None:
         self._seen.clear()
         self._liquidity.clear()
+        self._ticker_story.clear()
         self._warmed_up = False
+
+    # ── 2-hour per-ticker story dedup ──────────────────────────────────────
+    @staticmethod
+    def _story_fp(title: str) -> str:
+        """Normalize title to a stable fingerprint (lowercase, no punctuation)."""
+        return re.sub(r"[^\w\s]", "", title.lower()).strip()
+
+    def is_ticker_story_seen(self, ticker: str, title: str, hours: float = 2.0) -> bool:
+        """Return True if the same story was already sent for *ticker* within *hours*."""
+        fp = self._story_fp(title)
+        stories = self._ticker_story.get(ticker, {})
+        if fp in stories:
+            age_h = (datetime.now(timezone.utc) - stories[fp]).total_seconds() / 3600
+            return age_h < hours
+        return False
+
+    def mark_ticker_story(self, ticker: str, title: str) -> None:
+        """Record that this story was sent for *ticker* right now."""
+        fp = self._story_fp(title)
+        if ticker not in self._ticker_story:
+            self._ticker_story[ticker] = {}
+        self._ticker_story[ticker][fp] = datetime.now(timezone.utc)
 
     # ── liquidity cache ────────────────────────────────────────────────────
     def has_liquidity_cache(self, ticker: str) -> bool:
@@ -665,6 +737,11 @@ async def run_news_engine_cycle(
             if engine_state.is_seen(item_id):
                 continue
 
+            # Source quality filter — discard items from non-whitelisted publishers
+            if not _is_allowed_source(raw["source"]):
+                engine_state.mark_seen(item_id)
+                continue
+
             title   = raw["title"]
             matched = _matches_catalyst(title, NEWS_CATALYST_KEYWORDS)
             if not matched:
@@ -681,23 +758,15 @@ async def run_news_engine_cycle(
             if warming_up:
                 continue   # silently prime the dedup set
 
+            # 2-hour per-ticker story dedup (same story from multiple sources)
+            if engine_state.is_ticker_story_seen(ticker, title):
+                log.debug("News deduped (2h window): %s | %s", ticker, title[:60])
+                continue
+
             reaction = "bullish" if score > 0 else "bearish"
 
             # Translate title to Hebrew
             title_heb = await asyncio.to_thread(_translate_to_hebrew, title)
-
-            flash = NewsFlash(
-                ticker=ticker,
-                title=title_heb,
-                summary=title_heb,
-                url=raw["url"],
-                source=raw["source"],
-                sentiment_score=score,
-                catalyst_keywords=matched,
-                reaction=reaction,
-                is_watchlist=True,
-                item_id=item_id,
-            )
 
             # Fetch TA for context (failure is non-fatal — AI runs with or without it)
             ta_signal = None
@@ -709,7 +778,7 @@ async def run_news_engine_cycle(
 
             # AI-powered analysis — passes original English title so the model
             # reasons on clean input; flash.title stays as the Hebrew translation.
-            flash.summary = await _ai_analyze_news(
+            ai_summary, impact_score = await _ai_analyze_news(
                 title=title,
                 ticker=ticker,
                 keywords=matched,
@@ -717,6 +786,27 @@ async def run_news_engine_cycle(
                 ta_signal=ta_signal,
             )
 
+            # Impact Score gate — only send high-impact news
+            if impact_score < _IMPACT_SCORE_MIN:
+                log.debug(
+                    "News filtered (impact %d/10 < %d): %s | %s",
+                    impact_score, _IMPACT_SCORE_MIN, ticker, title[:60],
+                )
+                continue
+
+            flash = NewsFlash(
+                ticker=ticker,
+                title=title_heb,
+                summary=ai_summary,
+                url=raw["url"],
+                source=raw["source"],
+                sentiment_score=score,
+                catalyst_keywords=matched,
+                reaction=reaction,
+                is_watchlist=True,
+                item_id=item_id,
+            )
+            engine_state.mark_ticker_story(ticker, title)
             flashes.append(flash)
 
         await asyncio.sleep(0)
@@ -727,6 +817,11 @@ async def run_news_engine_cycle(
     for raw in general_items:
         item_id = raw["item_id"]
         if engine_state.is_seen(item_id):
+            continue
+
+        # Source quality filter
+        if not _is_allowed_source(raw["source"]):
+            engine_state.mark_seen(item_id)
             continue
 
         title = raw["title"]
@@ -760,13 +855,26 @@ async def run_news_engine_cycle(
         if not winning_ticker:
             continue
 
+        # 2-hour per-ticker story dedup
+        if engine_state.is_ticker_story_seen(winning_ticker, title):
+            log.debug("News deduped (2h window): %s | %s", winning_ticker, title[:60])
+            continue
+
         title_heb  = await asyncio.to_thread(_translate_to_hebrew, title)
-        ai_summary = await _ai_analyze_news(
+        ai_summary, impact_score = await _ai_analyze_news(
             title=title,
             ticker=winning_ticker,
             keywords=matched_hik,
             reaction=reaction,
         )
+
+        # Impact Score gate
+        if impact_score < _IMPACT_SCORE_MIN:
+            log.debug(
+                "News filtered (impact %d/10 < %d): %s | %s",
+                impact_score, _IMPACT_SCORE_MIN, winning_ticker, title[:60],
+            )
+            continue
 
         flash = NewsFlash(
             ticker=winning_ticker,
@@ -780,6 +888,7 @@ async def run_news_engine_cycle(
             is_watchlist=False,
             item_id=item_id,
         )
+        engine_state.mark_ticker_story(winning_ticker, title)
         flashes.append(flash)
 
     # ── Path 3: Macro / Political ────────────────────────────────────────────
