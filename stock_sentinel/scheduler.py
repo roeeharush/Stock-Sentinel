@@ -94,11 +94,43 @@ async def _async_cycle(
                 log.warning("%s: skipped — signal computation failed: %s", ticker, exc)
                 continue
 
+            # --- Sentiment evaluation (logged for every ticker, pass or fail) ---
+            score = combined_sentiment_score(snap)
+            t_sig = snap.technical
+            _thresh = config.TRADE_SENTIMENT_THRESHOLD
+
+            if t_sig.direction == "NEUTRAL":
+                _reason = "NEUTRAL direction — no trade signal"
+            elif t_sig.technical_score < config.TECHNICAL_SCORE_MIN:
+                _reason = (
+                    f"tech_score={t_sig.technical_score} below min={config.TECHNICAL_SCORE_MIN}"
+                )
+            elif t_sig.direction == "LONG" and score < _thresh:
+                _reason = (
+                    f"sentiment={score:.2f} below LONG threshold=+{_thresh:.2f} → REJECTED"
+                )
+            elif t_sig.direction == "SHORT" and score > -_thresh:
+                _reason = (
+                    f"sentiment={score:.2f} above SHORT threshold=-{_thresh:.2f} → REJECTED"
+                )
+            elif snap.last_alert_at is not None:
+                from datetime import timedelta
+                waited = (datetime.now(timezone.utc) - snap.last_alert_at).seconds // 60
+                if waited < config.COOLDOWN_MINUTES:
+                    _reason = f"cooldown active — {waited}/{config.COOLDOWN_MINUTES} min elapsed"
+                else:
+                    _reason = "passing all filters → evaluating alert"
+            else:
+                _reason = "passing all filters → evaluating alert"
+
+            log.info(
+                "Ticker: %s | Direction: %s | Sentiment: %.2f | Tech Score: %d | Reason: %s",
+                ticker, t_sig.direction, score, t_sig.technical_score, _reason,
+            )
+
             # --- Filtering & Action ---
             if not should_alert(snap, blacklist=blacklist):
                 continue
-
-            score = combined_sentiment_score(snap)
             headlines = snap.news_sentiment.headlines if snap.news_sentiment else []
             chart_path = generate_chart(ticker, df, snap.technical)
 
