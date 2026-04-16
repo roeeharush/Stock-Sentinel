@@ -23,6 +23,12 @@ X_COOKIES_PATH = str(_PROJECT_ROOT / "session" / "x_cookies.json")
 SENTIMENT_MIN_TWEETS: int = 10
 SENTIMENT_MIN_HEADLINES: int = 3
 SENTIMENT_MIN_RSS_HEADLINES: int = 3
+# Minimum absolute sentiment score required to open a trade.
+# LONG fires when combined_sentiment_score >= +TRADE_SENTIMENT_THRESHOLD.
+# SHORT fires when combined_sentiment_score <= -TRADE_SENTIMENT_THRESHOLD.
+# 0.0 = any positive/negative lean (most signals)
+# 0.5 = strong conviction required (fewer, higher-quality signals)
+TRADE_SENTIMENT_THRESHOLD: float = 0.5
 COOLDOWN_MINUTES = 120
 RSI_OVERSOLD = 30.0
 RSI_OVERBOUGHT = 70.0

@@ -175,9 +175,9 @@ def should_alert(
         return False
 
     score = combined_sentiment_score(snapshot)
-    if t.direction == "LONG" and score <= 0:
+    if t.direction == "LONG" and score < config.TRADE_SENTIMENT_THRESHOLD:
         return False
-    if t.direction == "SHORT" and score >= 0:
+    if t.direction == "SHORT" and score > -config.TRADE_SENTIMENT_THRESHOLD:
         return False
 
     if snapshot.last_alert_at is not None:
