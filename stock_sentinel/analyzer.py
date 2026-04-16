@@ -1,9 +1,12 @@
+import logging
 import numpy as np
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 from datetime import datetime, timezone
 from stock_sentinel.models import TechnicalSignal
+
+log = logging.getLogger(__name__)
 from stock_sentinel.config import (
     RSI_OVERSOLD,
     RSI_OVERBOUGHT,
@@ -34,7 +37,10 @@ def fetch_ohlcv(ticker: str, period: str = "1y", interval: str = "1d") -> pd.Dat
     if df.empty:
         raise ValueError(f"No OHLCV data returned for {ticker}")
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [col[0] for col in df.columns]
+        # Take only the field-name level (level 0); drop ticker-name duplicates
+        df.columns = df.columns.get_level_values(0)
+    # Remove duplicate column names (keep first occurrence)
+    df = df.loc[:, ~df.columns.duplicated()]
     return df
 
 
@@ -306,49 +312,68 @@ def compute_signals(ticker: str, df: pd.DataFrame) -> TechnicalSignal:
     def _safe_get(val, default):
         return default if (val is None or pd.isna(val)) else float(val)
 
+    # ── Helper: run one pandas_ta call without crashing the whole function ──────
+    def _safe_ta(fn_label: str, fn):
+        try:
+            fn()
+        except Exception as exc:
+            log.warning("%s: indicator '%s' failed — %s", ticker, fn_label, exc)
+
+    # ── Helper: extract a guaranteed 1-D Series from a column ─────────────────
+    def _col(name: str) -> pd.Series:
+        s = df[name]
+        return s.squeeze() if isinstance(s, pd.DataFrame) else s
+
     # ── Core indicators (pre-injection support for tests) ──────────────────────
     if "RSI_14" not in df.columns:
-        df.ta.rsi(length=14, append=True)
+        _safe_ta("RSI", lambda: df.ta.rsi(length=14, append=True))
     if "SMA_20" not in df.columns:
-        df.ta.sma(length=20, append=True)
+        _safe_ta("SMA_20", lambda: df.ta.sma(length=20, append=True))
     if "SMA_50" not in df.columns:
-        df.ta.sma(length=50, append=True)
+        _safe_ta("SMA_50", lambda: df.ta.sma(length=50, append=True))
     if "ATRr_14" not in df.columns:
-        df.ta.atr(length=14, append=True)
+        _safe_ta("ATR", lambda: df.ta.atr(length=14, append=True))
 
     # ── EMA 200 ────────────────────────────────────────────────────────────────
     if "EMA_200" not in df.columns:
-        df.ta.ema(length=200, append=True)
+        _safe_ta("EMA_200", lambda: df.ta.ema(length=200, append=True))
 
     # ── MACD ──────────────────────────────────────────────────────────────────
     if "MACD_12_26_9" not in df.columns:
-        df.ta.macd(append=True)
+        _safe_ta("MACD", lambda: df.ta.macd(append=True))
 
     # ── Bollinger Bands (20, 2σ) ───────────────────────────────────────────────
     if "BBU_20_2.0" not in df.columns:
-        df.ta.bbands(length=20, std=2.0, append=True)
+        _safe_ta("BBands", lambda: df.ta.bbands(length=20, std=2.0, append=True))
 
     # ── Stochastic RSI ─────────────────────────────────────────────────────────
     if "STOCHRSIk_14_14_3_3" not in df.columns:
-        df.ta.stochrsi(length=14, rsi_length=14, k=3, d=3, append=True)
+        _safe_ta("StochRSI", lambda: df.ta.stochrsi(length=14, rsi_length=14, k=3, d=3, append=True))
 
     # ── ADX ────────────────────────────────────────────────────────────────────
     if "ADX_14" not in df.columns:
-        df.ta.adx(length=14, append=True)
+        _safe_ta("ADX", lambda: df.ta.adx(length=14, append=True))
 
     # ── OBV ────────────────────────────────────────────────────────────────────
     if "OBV" not in df.columns:
-        df.ta.obv(append=True)
+        _safe_ta("OBV", lambda: df.ta.obv(append=True))
 
     # ── EMA 21 (short-term momentum line) ─────────────────────────────────────
     if "EMA_21" not in df.columns:
-        df.ta.ema(length=21, append=True)
+        _safe_ta("EMA_21", lambda: df.ta.ema(length=21, append=True))
 
     # ── Rolling VWAP (20-day) ──────────────────────────────────────────────────
+    # Uses .squeeze() on every column to guarantee 1-D Series regardless of
+    # whether yfinance returned a MultiIndex that wasn't fully flattened.
     if "VWAP_20" not in df.columns:
-        typical = (df["High"] + df["Low"] + df["Close"]) / 3
-        vol = df["Volume"].astype(float)
-        df["VWAP_20"] = (typical * vol).rolling(20).sum() / vol.rolling(20).sum()
+        try:
+            typical = (_col("High") + _col("Low") + _col("Close")) / 3.0
+            vol_s   = _col("Volume").astype(float)
+            vwap_s  = (typical * vol_s).rolling(20).sum() / vol_s.rolling(20).sum()
+            df["VWAP_20"] = vwap_s.squeeze() if isinstance(vwap_s, pd.DataFrame) else vwap_s
+        except Exception as exc:
+            log.warning("%s: VWAP_20 failed (%s) — using Close as fallback", ticker, exc)
+            df["VWAP_20"] = _col("Close")
 
     # ── Volume Spike ───────────────────────────────────────────────────────────
     vol_ma20 = df["Volume"].astype(float).rolling(20).mean()
@@ -509,6 +534,21 @@ def compute_signals(ticker: str, df: pd.DataFrame) -> TechnicalSignal:
         confluence_factors.append("Bullish Divergence")
     elif rsi_divergence == "bearish":
         confluence_factors.append("Bearish Divergence")
+
+    # ── Validation gate ────────────────────────────────────────────────────────
+    if not (0 <= technical_score <= 100):
+        log.warning(
+            "%s: technical_score=%d out of range [0,100] — clamping to 0",
+            ticker, technical_score,
+        )
+        technical_score = max(0, min(100, technical_score))
+
+    log.info(
+        "%s: signals computed — direction=%s rsi=%.1f tech_score=%d "
+        "ema200_above=%s volume_spike=%s pattern='%s'",
+        ticker, direction, rsi, technical_score,
+        ema_200_above, volume_spike, pattern,
+    )
 
     return TechnicalSignal(
         ticker=ticker,
