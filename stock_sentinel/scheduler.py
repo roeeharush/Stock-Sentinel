@@ -236,7 +236,12 @@ def run_daily_report() -> None:
 
 def run_monitor() -> None:
     """Synchronous APScheduler entry point for the live trade monitor."""
-    log.info("run_monitor: job triggered by scheduler (NY time)")
+    try:
+        from zoneinfo import ZoneInfo
+        ny_time = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S ET")
+    except Exception:
+        ny_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    log.info("run_monitor: triggered at %s", ny_time)
     try:
         result = asyncio.run(
             check_active_trades(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
@@ -724,27 +729,24 @@ def main() -> None:
         ),
     )
 
-    # Live trade monitor: every 2 minutes, 9:30–16:00 ET, Mon–Fri
+    # Live trade monitor: every 2 minutes, 24/7.
+    # Market-hours guard lives inside run_monitor / check_active_trades so it
+    # fires even if the server timezone differs from New York.
+    # next_run_time=now() triggers the first cycle immediately on startup.
     scheduler.add_job(
         run_monitor,
-        CronTrigger(
-            day_of_week="mon-fri",
-            hour="9-15",
-            minute="*/2",
-            timezone="America/New_York",
-        ),
+        IntervalTrigger(minutes=2),
+        next_run_time=datetime.now(timezone.utc),
     )
 
-    # Autonomous Market Hunter: every 15 min, 9:30–15:45 ET, Mon–Fri
+    # Autonomous Market Hunter: every 15 minutes, 24/7.
+    # Market-hours guard is applied inside _async_scanner_cycle via the
+    # signal direction / sentiment checks (no signal → no alert).
     scheduler.add_job(
         run_scanner,
-        CronTrigger(
-            day_of_week="mon-fri",
-            hour="9-15",
-            minute="0,15,30,45",
-            timezone="America/New_York",
-        ),
+        IntervalTrigger(minutes=15),
         args=[scanner_state],
+        next_run_time=datetime.now(timezone.utc),
     )
 
     # Real-time News Catalyst Engine: every 5 minutes, 24/7 — no market-hour
