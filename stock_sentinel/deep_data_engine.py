@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import yfinance as yf
 
+from stock_sentinel import config
 from stock_sentinel.models import InsiderAlert, OptionsFlowAlert
 
 log = logging.getLogger(__name__)
@@ -20,8 +21,10 @@ log = logging.getLogger(__name__)
 # ── Thresholds ────────────────────────────────────────────────────────────────
 _INSIDER_MIN_VALUE      = 100_000   # USD — ignore small/symbolic purchases
 _OPTIONS_MIN_VOLUME     = 1_000     # absolute floor
-_OPTIONS_VOLUME_OI_MULT = 3.0       # volume must be ≥ 3× open interest
+# Volume/OI ratio is now driven by config.OPTIONS_VOLUME_OI_MIN_RATIO (default 5.0).
+# Edit that constant in config.py to adjust strictness without touching this file.
 _OPTIONS_TOP_N          = 5         # return at most N options hits per ticker
+_OPTIONS_DEDUP_HOURS    = 1         # same contract is silent for this many hours
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -37,8 +40,11 @@ class DeepDataState:
     """
 
     def __init__(self) -> None:
-        self._seen_insider:  set[str] = set()
-        self._seen_options:  set[str] = set()
+        self._seen_insider: set[str] = set()
+        # Maps dedup-key → first-seen UTC datetime.
+        # Key is ticker|expiry|strike|option_type (volume intentionally excluded
+        # so the same contract cannot re-fire every hour with a slightly different count).
+        self._seen_options: dict[str, datetime] = {}
         self._warmed_up: bool = False
 
     @property
@@ -47,6 +53,16 @@ class DeepDataState:
 
     def mark_warmed_up(self) -> None:
         self._warmed_up = True
+
+    def is_options_seen(self, key: str) -> bool:
+        """Return True if this options contract key was seen within the dedup window."""
+        seen_at = self._seen_options.get(key)
+        if seen_at is None:
+            return False
+        return datetime.now(timezone.utc) - seen_at < timedelta(hours=_OPTIONS_DEDUP_HOURS)
+
+    def mark_options_seen(self, key: str) -> None:
+        self._seen_options[key] = datetime.now(timezone.utc)
 
     def clear(self) -> None:
         self._seen_insider.clear()
@@ -145,7 +161,7 @@ def _fetch_unusual_options_flow(ticker: str) -> list[OptionsFlowAlert]:
                     if oi == 0:
                         continue
                     ratio = vol / oi
-                    if ratio < _OPTIONS_VOLUME_OI_MULT:
+                    if ratio < config.OPTIONS_VOLUME_OI_MIN_RATIO:
                         continue
                     hits.append(OptionsFlowAlert(
                         ticker=ticker,
@@ -219,9 +235,12 @@ async def run_deep_data_cycle(
             options_hits = []
 
         for hit in options_hits:
-            key = f"{hit.ticker}|{hit.expiry}|{hit.strike}|{hit.option_type}|{hit.volume}"
-            if key not in state._seen_options:
-                state._seen_options.add(key)
+            # Key excludes volume so the same contract doesn't re-alert each hour
+            # simply because its volume ticked up.  The 1-hour dedup window in
+            # DeepDataState.is_options_seen() handles the cooldown.
+            key = f"{hit.ticker}|{hit.expiry}|{hit.strike}|{hit.option_type}"
+            if not state.is_options_seen(key):
+                state.mark_options_seen(key)
                 if not warming_up:
                     new_options.append(hit)
 

@@ -10,6 +10,27 @@ from stock_sentinel.notifier import send_trade_update  # noqa: E402  (needed for
 log = logging.getLogger(__name__)
 
 
+def _is_market_open() -> bool:
+    """Return True when the NYSE is within regular trading hours (09:30–16:00 ET, Mon–Fri).
+
+    Uses zoneinfo for correct DST handling.  Falls back to a UTC-4 approximation
+    if zoneinfo is unavailable (Python < 3.9 environments).
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        from datetime import timedelta
+        offset = timedelta(hours=-4)          # EDT (UTC-4); close enough for a guard
+        now_et = datetime.now(timezone.utc).astimezone(timezone(offset))
+
+    if now_et.weekday() >= 5:                 # Saturday=5, Sunday=6
+        return False
+    market_open  = now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
+    market_close = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
+    return market_open <= now_et <= market_close
+
+
 def _get_current_price(ticker: str) -> float | None:
     """Fetch the latest price for a ticker. Tries fast_info first, falls back to 1m bars."""
     try:
@@ -78,18 +99,32 @@ async def check_active_trades(bot_token: str, chat_id: str) -> dict:
 
     Returns {"checked": N, "updates_sent": M}.
     """
+    log.info("Monitor process started. Checking market status...")
+
+    if not _is_market_open():
+        log.info("Market is currently closed (NY Time). Skipping scan.")
+        return {"checked": 0, "updates_sent": 0}
+
+    log.info("Market is open. Fetching active trades from DB...")
+
     trades = get_active_trades()
     if not trades:
-        log.debug("Monitor: no active trades")
+        log.info("Monitor: no active trades in DB — nothing to check.")
         return {"checked": 0, "updates_sent": 0}
+
+    log.info("Monitor: %d active trade(s) found. Fetching live prices...", len(trades))
 
     # Batch price fetch — one ticker at a time (yfinance free tier)
     tickers = list({t["ticker"] for t in trades})
     current_prices: dict[str, float] = {}
     for ticker in tickers:
+        log.info("Checking trade potential for %s...", ticker)
         price = _get_current_price(ticker)
         if price is not None:
             current_prices[ticker] = price
+            log.info("Monitor: %s current price = $%.2f", ticker, price)
+        else:
+            log.warning("Monitor: could not fetch price for %s — skipping", ticker)
 
     updates_sent = 0
     for trade in trades:
@@ -99,6 +134,9 @@ async def check_active_trades(bot_token: str, chat_id: str) -> dict:
 
         price = current_prices[ticker]
         triggered = _check_levels(trade, price)
+
+        if not triggered:
+            log.debug("Monitor: %s — no levels triggered at $%.2f", ticker, price)
 
         for update_type in triggered:
             success = await send_trade_update(trade, update_type, price, bot_token, chat_id)
@@ -111,4 +149,5 @@ async def check_active_trades(bot_token: str, chat_id: str) -> dict:
                 updates_sent += 1
                 log.info("Monitor: %s %s hit at %.2f", ticker, update_type, price)
 
+    log.info("Monitor cycle complete: checked=%d updates_sent=%d", len(trades), updates_sent)
     return {"checked": len(trades), "updates_sent": updates_sent}

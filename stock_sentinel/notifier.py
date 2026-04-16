@@ -52,7 +52,9 @@ __all__ = ["build_message", "generate_chart", "send_alert",
            "build_learning_report_message", "send_learning_report",
            # Scheduled reports
            "send_morning_brief", "send_premarket_catalysts",
-           "build_daily_performance_report", "send_daily_performance_report"]
+           "build_daily_performance_report", "send_daily_performance_report",
+           # Options flood-guard summary
+           "build_options_summary_message", "send_options_summary"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -388,25 +390,26 @@ def build_message(alert: Alert, headlines: list[str], debate: DebateResult | Non
         lines.append("  ↘ דיברגנס דובי ב-RSI מזוהה")
 
     # Headlines
+    RLM = "\u200f"
     if headlines:
-        lines += ["", "📢 *חדשות מאומתות:*"]
+        lines += ["", f"{RLM}📢 *חדשות מאומתות:*"]
         for h in headlines[:5]:
-            lines.append(f"  • {translate_to_hebrew(h)}")
+            lines.append(f"{RLM}  • {translate_to_hebrew(h)}")
 
     # Confluence factors
     if alert.confluence_factors:
-        lines += ["", "🎯 *גורמי התכנסות הטרייד:*"]
+        lines += ["", f"{RLM}🎯 *גורמי התכנסות הטרייד:*"]
         for f in alert.confluence_factors:
-            lines.append(f"  ✅ {translate_to_hebrew(f)}")
+            lines.append(f"{RLM}  ✅ {translate_to_hebrew(f)}")
 
     # Analyst summary (MA Ribbon + Fibonacci + Volume Profile)
     summary = _build_ma_ribbon_summary(alert)
     if summary:
-        lines += ["", "💡 *סיכום אנליסט:*", f"  {summary}"]
+        lines += ["", f"{RLM}💡 *סיכום אנליסט:*", f"{RLM}  {summary}"]
 
     # Trade rationale — the 'why this trade, why now'
     rationale = _build_trade_rationale(alert)
-    lines += ["", "🔑 *רציונל העסקה:*", f"  {rationale}"]
+    lines += ["", f"{RLM}🔑 *רציונל העסקה:*", f"{RLM}  {rationale}"]
 
     # Agent Council debate section (optional)
     if debate is not None:
@@ -427,55 +430,98 @@ def build_news_flash_message(flash: NewsFlash) -> str:
     """Build Hebrew Telegram message for a breaking news flash.
 
     Structure:
-      [Header]
-      💡 כותרת  — the translated headline
-      ━━━
-      📊 ניתוח  — AI-generated bullet-point analysis (the 'why', not the 'what')
-      ⏰ timestamp | 🟢/🔴 bottom-line sentiment verdict
+      📢 Header               (no RLM — Telegram anchors first line automatically)
+      {RLM}💡 כותרת
+      {RLM}━━━━━━━━━━━━━━━━━━━━━━━━  (24 chars — won't wrap on mobile)
+      {RLM}📊 ניתוח:
+      {RLM}• bullet …  (up to 4, always in Hebrew)
+      {RLM}━━━━━━━━━━━━━━━━━━━━━━━━
+      {RLM}🔑 סיכום בשורה:
+      {RLM}⏰ timestamp · source
+      {RLM}🟢/🔴/⚪ verdict
     """
-    RLM = "\u200f"  # Right-to-Left Mark — forces RTL layout in Telegram
+    RLM     = "\u200f"
+    DIVIDER = f"{RLM}━━━━━━━━━━━━━━━━"   # exactly 16 ━, RLM-prefixed
 
+    # ── Hebrew guard ──────────────────────────────────────────────────────────
+    # If a line contains no Hebrew characters it was never translated (AI key
+    # missing or fallback path).  Run it through the project translator so the
+    # final message is *always* in Hebrew.
+    def _heb(text: str) -> str:
+        if not text:
+            return text
+        if any("\u05d0" <= ch <= "\u05ea" for ch in text):
+            return text          # already Hebrew — skip the network call
+        return translate_to_hebrew(text)
+
+    # ── Header (no RLM on line 1 — Telegram's first-char RTL heuristic) ──────
     is_watchlist = getattr(flash, "is_watchlist", True)
     header = (
-        f"{RLM}📢 *מבזק חדשות — {flash.ticker}*"
+        f"📢 *מבזק חדשות — {flash.ticker}*"
         if is_watchlist
-        else f"{RLM}💎 *גילוי הזדמנות — {flash.ticker}*"
+        else f"💎 *גילוי הזדמנות — {flash.ticker}*"
     )
+
+    # ── Title ─────────────────────────────────────────────────────────────────
+    title_heb = _heb(flash.title)
+
+    # ── Analysis bullets (≤ 4, always Hebrew, bullet on the right) ───────────
+    analysis_lines: list[str] = []
+    for raw in flash.summary.splitlines():
+        # strip any bullet marker the AI may have already prepended
+        cleaned = raw.strip().lstrip("•▸●▪▶-–").strip()
+        if not cleaned:
+            continue
+        heb_line = _heb(cleaned)
+        analysis_lines.append(f"{RLM}• {heb_line}")
+        if len(analysis_lines) == 4:
+            break
+
+    # ── Sentiment classification ──────────────────────────────────────────────
+    is_bullish = flash.reaction == "bullish" or flash.sentiment_score > 0
+    is_bearish = flash.reaction == "bearish" or flash.sentiment_score < 0
+
+    # ── Bottom Line ───────────────────────────────────────────────────────────
+    catalysts_str = (
+        ", ".join(flash.catalyst_keywords[:3])
+        if flash.catalyst_keywords
+        else "ידיעה מהותית"
+    )
+    direction_heb = (
+        "לחץ קנייה" if is_bullish
+        else "לחץ מכירה" if is_bearish
+        else "אי-ודאות"
+    )
+    bottom_line = (
+        f"{RLM}🔑 *סיכום בשורה:* {flash.ticker} עשויה להיות תחת "
+        f"{direction_heb} בטווח הקצר בעקבות: {catalysts_str}."
+    )
+
+    # ── Sentiment verdict ─────────────────────────────────────────────────────
+    if is_bullish:
+        verdict = f"{RLM}🟢 *מסקנה: סנטימנט שורי — לחץ קנייה אפשרי*"
+    elif is_bearish:
+        verdict = f"{RLM}🔴 *מסקנה: סנטימנט דובי — לחץ מכירה אפשרי*"
+    else:
+        verdict = f"{RLM}⚪ *מסקנה: סנטימנט ניטרלי*"
 
     source_suffix = f"  _{flash.source}_" if flash.source else ""
 
-    # ── Summary / analysis section ────────────────────────────────────────────
-    # The AI writes in Hebrew with bullet points (•) when relevant.
-    # We display it under an "ניתוח" label so it's clearly distinct from the
-    # raw translated headline above.
-    summary_lines: list[str] = []
-    for line in flash.summary.splitlines():
-        stripped = line.strip()
-        if stripped:
-            summary_lines.append(f"{RLM}  {stripped}")
-
-    # ── Sentiment bottom line ─────────────────────────────────────────────────
-    is_bullish = flash.reaction == "bullish" or flash.sentiment_score > 0
-    is_bearish = flash.reaction == "bearish" or flash.sentiment_score < 0
-    if is_bullish:
-        sentiment_line = f"{RLM}🟢 *מסקנה: סנטימנט שורי — לחץ קנייה אפשרי*"
-    elif is_bearish:
-        sentiment_line = f"{RLM}🔴 *מסקנה: סנטימנט דובי — לחץ מכירה אפשרי*"
-    else:
-        sentiment_line = f"{RLM}⚪ *מסקנה: סנטימנט ניטרלי*"
-
+    # ── Assemble ──────────────────────────────────────────────────────────────
     lines = [
         header,
         "",
-        f"{RLM}💡 *כותרת:* {flash.title}",
+        f"{RLM}💡 *כותרת:* {title_heb}",
         "",
-        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        DIVIDER,
         f"{RLM}📊 *ניתוח:*",
-        *summary_lines,
+        *analysis_lines,
+        DIVIDER,
+        bottom_line,
         "",
         f"{RLM}⏰ _{_israel_ts(flash.published_at)}_{source_suffix}",
         "",
-        sentiment_line,
+        verdict,
     ]
 
     return "\n".join(lines)
@@ -586,25 +632,84 @@ def build_smart_money_message(alert: InsiderAlert | OptionsFlowAlert) -> str:
         ]
     else:
         # OptionsFlowAlert
+        RLM             = "\u200f"
         direction_emoji = "🟢" if alert.option_type == "CALL" else "🔴"
         option_heb      = "CALL (ציפייה לעלייה)" if alert.option_type == "CALL" else "PUT (ציפייה לירידה)"
         lines = [
             "🕵️ *מעקב כסף חכם ודיווחים פנים-ארגוניים*",
             "",
-            f"📌 *מניה:* {alert.ticker}",
-            f"{direction_emoji} *סוג אופציה:* {option_heb}",
-            f"🎯 *מחיר מימוש:* ${alert.strike:.1f}",
-            f"📅 *פקיעה:* {alert.expiry}",
-            f"📊 *נפח מסחר:* {alert.volume:,}  |  OI: {alert.open_interest:,}",
-            f"⚡ *יחס Volume/OI:* {alert.volume_oi_ratio:.1f}x",
-            f"📋 *מקור:* {alert.source}",
+            f"{RLM}📌 *מניה:* {alert.ticker}",
+            f"{RLM}{direction_emoji} *סוג אופציה:* {option_heb}",
+            f"{RLM}🎯 *מחיר מימוש:* ${alert.strike:.1f}",
+            f"{RLM}📅 *פקיעה:* {alert.expiry}",
+            f"{RLM}📊 *נפח מסחר:* {alert.volume:,}  |  OI: {alert.open_interest:,}",
+            f"{RLM}⚡ *יחס Volume/OI:* {alert.volume_oi_ratio:.1f}x",
+            f"{RLM}📋 *מקור:* {alert.source}",
             "",
-            f"🔑 *ניתוח:* נפח אופציות חריג — {alert.volume_oi_ratio:.1f}× מעל ה-Open Interest. "
+            f"{RLM}🔑 *ניתוח:* נפח אופציות חריג — {alert.volume_oi_ratio:.1f}× מעל ה-Open Interest. "
             "פעילות זו מאפיינת 'כסף חכם' שרוכש הגנה או ספקולציה כיוונית לפני אירוע צפוי.",
             "",
-            f"⏰ _{_israel_ts()}_",
+            f"{RLM}⏰ _{_israel_ts()}_",
         ]
     return "\n".join(lines)
+
+
+def build_options_summary_message(alerts: list[OptionsFlowAlert]) -> str:
+    """Build a single Hebrew summary for a flood of options alerts.
+
+    Called when more than OPTIONS_FLOOD_MAX alerts pass the sentiment filter in
+    one cycle.  Lists each ticker with its dominant direction and best ratio
+    instead of sending 20+ individual messages.
+    """
+    from collections import defaultdict
+
+    RLM = "\u200f"
+    lines = [
+        "📊 *סיכום פעילות אופציות חריגה*",
+        "",
+        f"{RLM}⚠️ *{len(alerts)} איתותי אופציות התגלו — מרוכזים לסיכום יחיד למניעת רעש*",
+        "",
+    ]
+
+    # Group alerts by ticker, then pick the dominant direction and best ratio
+    by_ticker: dict[str, list[OptionsFlowAlert]] = defaultdict(list)
+    for a in alerts:
+        by_ticker[a.ticker].append(a)
+
+    for ticker in sorted(by_ticker):
+        ticker_alerts = by_ticker[ticker]
+        calls = [a for a in ticker_alerts if a.option_type == "CALL"]
+        puts  = [a for a in ticker_alerts if a.option_type == "PUT"]
+
+        parts: list[str] = []
+        if calls:
+            best = max(calls, key=lambda x: x.volume_oi_ratio)
+            parts.append(f"🟢 CALL {best.strike:.0f} exp {best.expiry} ({best.volume_oi_ratio:.1f}× OI)")
+        if puts:
+            best = max(puts, key=lambda x: x.volume_oi_ratio)
+            parts.append(f"🔴 PUT {best.strike:.0f} exp {best.expiry} ({best.volume_oi_ratio:.1f}× OI)")
+
+        lines.append(f"{RLM}• *{ticker}:* {' | '.join(parts)}")
+
+    lines += [
+        "",
+        f"{RLM}⏰ _{_israel_ts()}_",
+    ]
+    return "\n".join(lines)
+
+
+async def send_options_summary(
+    alerts: list[OptionsFlowAlert], bot_token: str, chat_id: str
+) -> bool:
+    """Send a batched options activity summary via Telegram. Returns True on success."""
+    bot  = Bot(token=bot_token)
+    text = build_options_summary_message(alerts)
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        return True
+    except TelegramError as exc:
+        log.warning("send_options_summary failed: %s", exc)
+        return False
 
 
 async def send_smart_money_alert(
@@ -966,7 +1071,7 @@ def build_daily_performance_report(stats: dict, today_alerts: list[dict]) -> str
                 outcome = "⏳ פתוח"
 
             lines.append(
-                f"*{ticker}* {dir_arrow} {direction} | "
+                f"\u200f*{ticker}* {dir_arrow} {direction} | "
                 f"כניסה `${entry:.2f}` → יעד `${tp1:.2f}` | סטופ `${sl:.2f}` | {outcome}"
             )
 

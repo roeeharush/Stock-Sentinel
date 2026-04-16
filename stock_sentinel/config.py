@@ -99,6 +99,24 @@ RR_MIN: float                 = 1.5     # minimum Risk/Reward ratio to pass filt
 ATR_PCT_HIGH_THRESHOLD: float = 3.0     # ATR% >= this triggers SHORT_TERM via volatility
 
 
+# ── Options Flow Filters ──────────────────────────────────────────────────────
+# Raise OPTIONS_VOLUME_OI_MIN_RATIO to make the volume filter stricter.
+#   3.0 = original (noisy)  |  5.0 = recommended  |  7.0+ = very strict
+OPTIONS_VOLUME_OI_MIN_RATIO: float = 5.0
+
+# Sentiment confirmation thresholds for CALL / PUT cross-reference.
+# A CALL only fires when news sentiment >= +OPTIONS_CALL_SENTIMENT_MIN.
+# A PUT  only fires when news sentiment <= -OPTIONS_PUT_SENTIMENT_MIN.
+# Raise toward 1.0 to require stronger news confirmation.
+OPTIONS_CALL_SENTIMENT_MIN: float = 0.5
+OPTIONS_PUT_SENTIMENT_MIN:  float = 0.5
+
+# Anti-flood: if more than this many options alerts pass all filters in one
+# cycle, they are batched into a single summary message instead of individual ones.
+# Lower this number (e.g. 3) to batch more aggressively.
+OPTIONS_FLOOD_MAX: int = 5
+
+
 def validate_secrets() -> None:
     """Call from scheduler.main() before starting the loop."""
     missing = [k for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")

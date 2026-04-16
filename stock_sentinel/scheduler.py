@@ -19,6 +19,7 @@ from stock_sentinel.notifier import (
     send_learning_report,
     send_morning_brief, send_premarket_catalysts,
     send_daily_performance_report,
+    send_options_summary,
 )
 from stock_sentinel.db import init_db, log_alert, get_daily_stats, get_today_alerts
 from stock_sentinel.monitor import check_active_trades
@@ -235,12 +236,15 @@ def run_daily_report() -> None:
 
 def run_monitor() -> None:
     """Synchronous APScheduler entry point for the live trade monitor."""
+    log.info("run_monitor: job triggered by scheduler (NY time)")
     try:
         result = asyncio.run(
             check_active_trades(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
         )
-        if result["updates_sent"]:
-            log.info("Monitor: sent %d trade update(s)", result["updates_sent"])
+        log.info(
+            "run_monitor: complete — checked=%d updates_sent=%d",
+            result.get("checked", 0), result.get("updates_sent", 0),
+        )
     except Exception as exc:
         log.error("Monitor run failed: %s", exc)
 
@@ -382,8 +386,10 @@ async def _async_scanner_cycle(scanner_state: ScannerCooldownTracker) -> None:
 
 def run_scanner(scanner_state: ScannerCooldownTracker) -> None:
     """Synchronous APScheduler entry point for the autonomous market scanner."""
+    log.info("run_scanner: job triggered by scheduler (NY time)")
     try:
         asyncio.run(_async_scanner_cycle(scanner_state))
+        log.info("run_scanner: cycle complete")
     except Exception as exc:
         log.error("Scanner cycle failed: %s", exc)
 
@@ -423,10 +429,53 @@ def run_news_engine(news_state: NewsEngineState) -> None:
         log.error("News engine cycle failed: %s", exc)
 
 
+def _get_ticker_sentiment(ticker: str) -> float | None:
+    """Fetch and combine RSS + news sentiment for *ticker*.
+
+    Returns a combined score in [-1.0, +1.0], or None when no usable data is
+    available (both sources failed or returned too few headlines).
+    Uses the same 40/40 weighting as the main trade-alert pipeline.
+
+    Safe to call even when the cache is empty — exceptions are caught and
+    treated as 'no data'.
+    """
+    from stock_sentinel.news_scraper import fetch_news_sentiment
+    from stock_sentinel.rss_provider import fetch_rss_sentiment
+    from stock_sentinel.signal_filter import combined_sentiment_score
+
+    snap = TickerSnapshot(ticker=ticker)
+    try:
+        snap.rss_sentiment = fetch_rss_sentiment(ticker)
+    except Exception as exc:
+        log.debug("_get_ticker_sentiment: RSS fetch failed for %s — %s", ticker, exc)
+    try:
+        snap.news_sentiment = fetch_news_sentiment(ticker)
+    except Exception as exc:
+        log.debug("_get_ticker_sentiment: news fetch failed for %s — %s", ticker, exc)
+
+    # combined_sentiment_score returns 0.0 when all sources are unavailable.
+    # We treat that as "no data" so neutral tickers don't accidentally pass.
+    rss_ok  = snap.rss_sentiment  is not None and not snap.rss_sentiment.failed  and snap.rss_sentiment.headline_count  > 0
+    news_ok = snap.news_sentiment is not None and not snap.news_sentiment.failed and snap.news_sentiment.headline_count > 0
+    if not rss_ok and not news_ok:
+        return None
+
+    return combined_sentiment_score(snap)
+
+
 async def _async_deep_data_cycle(deep_state: DeepDataState) -> None:
-    """Fetch insider purchases + unusual options flow, send alerts for new hits."""
+    """Fetch insider purchases + unusual options flow, send alerts for new hits.
+
+    Options alerts pass through three gates before dispatch:
+      1. Volume/OI ratio  — enforced upstream in deep_data_engine (config.OPTIONS_VOLUME_OI_MIN_RATIO)
+      2. Sentiment check  — CALL requires news score >= +OPTIONS_CALL_SENTIMENT_MIN,
+                            PUT  requires news score <= -OPTIONS_PUT_SENTIMENT_MIN
+      3. Flood guard      — if > OPTIONS_FLOOD_MAX alerts pass, send one summary instead
+    All thresholds live in config.py for easy adjustment.
+    """
     insider_alerts, options_alerts = await run_deep_data_cycle(config.WATCHLIST, deep_state)
 
+    # ── Insider purchases — no change, send immediately ───────────────────────
     for alert in insider_alerts:
         try:
             sent = await send_smart_money_alert(
@@ -440,19 +489,70 @@ async def _async_deep_data_cycle(deep_state: DeepDataState) -> None:
         except Exception as exc:
             log.error("Insider alert dispatch failed for %s: %s", alert.ticker, exc)
 
+    # ── Options flow — sentiment filter then flood guard ──────────────────────
+    qualified: list = []
     for alert in options_alerts:
         try:
-            sent = await send_smart_money_alert(
-                alert, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
+            score = _get_ticker_sentiment(alert.ticker)
+
+            if score is None:
+                log.info(
+                    "Options %s skipped for %s: no usable sentiment data",
+                    alert.option_type, alert.ticker,
+                )
+                continue
+
+            if alert.option_type == "CALL" and score < config.OPTIONS_CALL_SENTIMENT_MIN:
+                log.info(
+                    "Options CALL skipped for %s: sentiment %.2f < +%.2f threshold",
+                    alert.ticker, score, config.OPTIONS_CALL_SENTIMENT_MIN,
+                )
+                continue
+
+            if alert.option_type == "PUT" and score > -config.OPTIONS_PUT_SENTIMENT_MIN:
+                log.info(
+                    "Options PUT skipped for %s: sentiment %.2f > -%.2f threshold",
+                    alert.ticker, score, config.OPTIONS_PUT_SENTIMENT_MIN,
+                )
+                continue
+
+            qualified.append(alert)
+
+        except Exception as exc:
+            log.error("Options sentiment check failed for %s: %s", alert.ticker, exc)
+
+    if not qualified:
+        log.info("Options flow: all %d raw alerts filtered out — nothing to send", len(options_alerts))
+        return
+
+    # Flood guard: if too many qualify, collapse to a single summary message
+    if len(qualified) > config.OPTIONS_FLOOD_MAX:
+        log.info(
+            "Options flood guard triggered: %d alerts → sending summary (max=%d)",
+            len(qualified), config.OPTIONS_FLOOD_MAX,
+        )
+        try:
+            sent = await send_options_summary(
+                qualified, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
             )
             if sent:
-                log.info(
-                    "Options flow alert sent: %s %s $%.1f exp=%s vol=%d (%.1fx OI)",
-                    alert.ticker, alert.option_type, alert.strike,
-                    alert.expiry, alert.volume, alert.volume_oi_ratio,
-                )
+                log.info("Options summary sent: %d alerts batched", len(qualified))
         except Exception as exc:
-            log.error("Options flow alert dispatch failed for %s: %s", alert.ticker, exc)
+            log.error("Options summary dispatch failed: %s", exc)
+    else:
+        for alert in qualified:
+            try:
+                sent = await send_smart_money_alert(
+                    alert, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
+                )
+                if sent:
+                    log.info(
+                        "Options flow alert sent: %s %s $%.1f exp=%s vol=%d (%.1fx OI)",
+                        alert.ticker, alert.option_type, alert.strike,
+                        alert.expiry, alert.volume, alert.volume_oi_ratio,
+                    )
+            except Exception as exc:
+                log.error("Options flow alert dispatch failed for %s: %s", alert.ticker, exc)
 
 
 def run_deep_data(deep_state: DeepDataState) -> None:
