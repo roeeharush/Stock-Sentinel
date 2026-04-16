@@ -1,10 +1,15 @@
+import asyncio
 import json
+import logging
 import os
+import random
 from datetime import datetime, timezone
 from typing import Any
 from playwright.async_api import Browser, Page
 from playwright_stealth import Stealth
 from stock_sentinel.models import SentimentResult
+
+log = logging.getLogger(__name__)
 
 BULLISH_TERMS = {"buy", "bullish", "long", "breakout", "upside", "calls", "rally", "dip"}
 BEARISH_TERMS = {"sell", "bearish", "short", "dump", "downside", "puts", "crash"}
@@ -35,19 +40,26 @@ async def init_browser(cookies_path: str) -> tuple[Any, Browser, Page]:
 
 
 async def scrape_sentiment(ticker: str, page: Page) -> SentimentResult:
+    # Random inter-request delay to reduce bot-detection fingerprinting on X
+    delay = random.uniform(2.0, 5.0)
+    log.debug("scrape_sentiment: waiting %.1fs before scraping %s", delay, ticker)
+    await asyncio.sleep(delay)
+
     url = f"https://x.com/search?q=%24{ticker}+lang%3Aen&src=typed_query&f=live"
     try:
-        await page.goto(url, timeout=15000)
-        await page.wait_for_selector('[data-testid="tweetText"]', timeout=10000)
+        await page.goto(url, timeout=60000)
+        await page.wait_for_selector('[data-testid="tweetText"]', timeout=15000)
         elements = await page.query_selector_all('[data-testid="tweetText"]')
         texts = [(await el.inner_text()).lower() for el in elements[:30]]
+        log.info("scrape_sentiment: successfully scraped %d tweets for %s", len(texts), ticker)
         return SentimentResult(
             ticker=ticker,
             score=_score_texts(texts),
             tweet_count=len(texts),
             scraped_at=datetime.now(timezone.utc),
         )
-    except Exception:
+    except Exception as exc:
+        log.warning("scrape_sentiment: failed for %s — %s", ticker, exc)
         return SentimentResult(
             ticker=ticker,
             score=0.0,

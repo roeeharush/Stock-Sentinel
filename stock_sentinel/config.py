@@ -31,7 +31,7 @@ ATR_TP_MULTIPLIER: float = 3.0    # backward-compat alias = TP2
 ATR_TP1_MULTIPLIER: float = 1.5   # conservative target
 ATR_TP2_MULTIPLIER: float = 3.0   # moderate target
 ATR_TP3_MULTIPLIER: float = 5.0   # ambitious target
-SCRAPER_CIRCUIT_BREAKER_N = 3
+SCRAPER_CIRCUIT_BREAKER_N = 10
 TECHNICAL_SCORE_MIN: int = 60        # minimum confluence score to trigger an alert
 INSTITUTIONAL_SCORE_MIN: float = 2.0  # ⚠️  SMOKE TEST — restore to 6.0 for production
 SMOKE_TEST_LIMIT: int = 3             # ⚠️  SMOKE TEST — max alerts per scanner cycle; set 0 to disable
